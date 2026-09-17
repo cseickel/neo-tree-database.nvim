@@ -47,7 +47,7 @@ end
 --- there looking like a key that stopped working.
 ---@param state neotree.State
 ---@param node NuiTree.Node
----@param children table[]
+---@param children dbtree.Item[]
 local function show(state, node, children)
   local id = node:get_id()
   if #children == 0 then
@@ -110,10 +110,44 @@ local function fetch(state, node, request, on_document)
   end)
 end
 
+--- What each container holds, built from answers already fetched, or nil when
+--- its database has not been asked. Everything below a catalog is built from
+--- the document the catalog answered, so only a connection and a catalog can
+--- answer nil.
+---@type table<string, fun(node: dbtree.Item|NuiTree.Node): dbtree.Item[]|nil>
+local HELD = {
+  connection = function(node)
+    local scheme = schemes.of(node.extra.url)
+    local names = cache.get(node.id)
+    if scheme and names then
+      return items.catalogs(node, names, scheme.catalog_url)
+    end
+    return nil
+  end,
+  catalog = function(node)
+    local document = cache.get(node.id)
+    if document then
+      return items.schemas(node, document)
+    end
+    return nil
+  end,
+  schema = items.schema_groups,
+  folder = function(node)
+    -- A folder holding part of a relation says which node type its leaves take.
+    -- A folder holding relations does not, because each relation says its own.
+    if node.extra.leaf then
+      return items.relation_parts(node)
+    end
+    return items.relations(node)
+  end,
+  table = items.relation_groups,
+}
+HELD.view = HELD.table
+HELD.materialized_view = HELD.table
+
 ---@param state neotree.State
 ---@param node NuiTree.Node
-local function expand_connection(state, node)
-  local id = node:get_id()
+local function fetch_catalogs(state, node)
   local scheme = schemes.of(node.extra.url)
   if not scheme then
     return show_failure(
@@ -123,82 +157,57 @@ local function expand_connection(state, node)
     )
   end
 
-  local cached = cache.get(id)
-  if cached then
-    return show(state, node, items.catalogs(node, cached, scheme.catalog_url))
-  end
-
   fetch(state, node, scheme.catalogs(node.extra.url), function(document, live)
     local names = document.catalogs or {}
-    cache.put(id, names)
+    cache.put(live:get_id(), names)
     show(state, live, items.catalogs(live, names, scheme.catalog_url))
   end)
 end
 
 ---@param state neotree.State
 ---@param node NuiTree.Node
-local function expand_catalog(state, node)
-  local id = node:get_id()
+local function fetch_catalog(state, node)
   local scheme = schemes.of(node.extra.url)
   if not scheme then
     return show_failure(state, node, "cannot browse " .. node.extra.url)
   end
 
-  local cached = cache.get(id)
-  if cached then
-    return show(state, node, items.schemas(node, cached))
-  end
-
   -- A catalog node already carries the url that reaches it, which for postgres
   -- is not the url the connection was written with.
   fetch(state, node, scheme.introspect(node.extra.url, node.extra.catalog), function(document, live)
-    cache.put(id, document)
+    cache.put(live:get_id(), document)
     show(state, live, items.schemas(live, document))
   end)
 end
 
----@param state neotree.State
----@param node NuiTree.Node
-local function expand_folder(state, node)
-  -- A folder holding part of a relation says which node type its leaves take.
-  -- A folder holding relations does not, because each relation says its own.
-  if node.extra.leaf then
-    return show(state, node, items.relation_parts(node))
-  end
-  return show(state, node, items.relations(node))
-end
-
 ---@type table<string, fun(state: neotree.State, node: NuiTree.Node)>
-local EXPANDERS = {
-  connection = expand_connection,
-  catalog = expand_catalog,
-  folder = expand_folder,
-  schema = function(state, node)
-    show(state, node, items.schema_groups(node))
-  end,
-  table = function(state, node)
-    show(state, node, items.relation_groups(node))
-  end,
+local FETCHERS = {
+  connection = fetch_catalogs,
+  catalog = fetch_catalog,
 }
-EXPANDERS.view = EXPANDERS.table
-EXPANDERS.materialized_view = EXPANDERS.table
 
 --- Whether `node` holds anything to open onto.
 ---@param node NuiTree.Node
 ---@return boolean
 function M.is_container(node)
-  return EXPANDERS[node.type] ~= nil
+  return HELD[node.type] ~= nil
 end
 
---- Fills `node` with its children, from the cache when they are there and from
---- the database when they are not.
+--- Fills `node` with its children, from what is already held when it can and
+--- from the database when it cannot.
 ---@param state neotree.State
 ---@param node NuiTree.Node
 function M.expand(state, node)
-  local expander = EXPANDERS[node.type]
-  if expander then
-    expander(state, node)
+  local held = HELD[node.type]
+  if not held then
+    return
   end
+
+  local children = held(node)
+  if children then
+    return show(state, node, children)
+  end
+  FETCHERS[node.type](state, node)
 end
 
 --- Forgets what `node` answered and asks again. Everything under it is dropped
@@ -220,6 +229,41 @@ function M.refresh_node(state, node)
   M.expand(state, node)
 end
 
+--- `node` and everything under it, as items neo-tree can build a tree from.
+---@param tree NuiTree
+---@param node NuiTree.Node
+---@return dbtree.Item
+local function copy(tree, node)
+  ---@type dbtree.Item
+  local item = { id = node.id, name = node.name, type = node.type, extra = node.extra, loaded = node.loaded }
+  if node:has_children() then
+    item.children = {}
+    for _, child in ipairs(tree:get_nodes(node.id)) do
+      table.insert(item.children, copy(tree, child))
+    end
+  end
+  return item
+end
+
+--- Gives each connection in `list` what it showed in `tree`: its catalogs,
+--- what was loaded under them, and any error. A connection whose url has
+--- changed starts over, so it cannot show another server's catalogs.
+---
+--- neo-tree reopens nodes after a rebuild only by id, and only the ones present
+--- in the new items, so without this every connection comes back closed over
+--- its placeholder.
+---@param tree NuiTree
+---@param list dbtree.Item[]
+local function restore(tree, list)
+  for _, item in ipairs(list) do
+    local previous = tree:get_node(item.id)
+    if previous and previous.extra.url == item.extra.url then
+      item.loaded = previous.loaded
+      item.children = copy(tree, previous).children
+    end
+  end
+end
+
 ---Navigate to the given path.
 ---@param state neotree.State
 ---@param path string?
@@ -227,8 +271,7 @@ end
 ---@param callback function?
 M.navigate = function(state, path, path_to_reveal, callback)
   -- Every source clears this first. Left set, neo-tree treats the tree as
-  -- needing a rebuild on every open and focus, and a rebuild replaces browsed
-  -- connections with their placeholder child.
+  -- needing a rebuild on every open and focus.
   state.dirty = false
   state.path = items.ROOT
 
@@ -240,6 +283,11 @@ M.navigate = function(state, path, path_to_reveal, callback)
     children = items.message(items.ROOT, "no connections")
   else
     children = items.connections(list)
+    -- neo-tree rebuilds the tree whenever the window is reopened and whenever
+    -- any other source refreshes, and the tree being replaced is still here.
+    if state.tree then
+      restore(state.tree, children)
+    end
   end
 
   renderer.show_nodes(items.root(children), state)

@@ -14,6 +14,15 @@ the real children arrive.
 
 local M = {}
 
+---@class dbtree.Item
+---@field id string
+---@field name string
+---@field type string
+---@field extra table
+---@field loaded boolean|nil
+---@field children dbtree.Item[]|nil
+---@field _is_expanded boolean|nil
+
 ---@class dbtree.Column
 ---@field name string
 ---@field type string
@@ -63,7 +72,7 @@ end
 ---@param name string
 ---@param node_type string
 ---@param extra table
----@return table
+---@return dbtree.Item
 local function container(id, name, node_type, extra)
   return {
     id = id,
@@ -86,7 +95,7 @@ end
 ---@param name string
 ---@param node_type string
 ---@param extra table
----@return table
+---@return dbtree.Item
 local function leaf(id, name, node_type, extra)
   return { id = id, name = name, type = node_type, extra = extra }
 end
@@ -95,7 +104,7 @@ end
 --- does not mean the node is loaded, and the caller says so.
 ---@param parent_id string
 ---@param text string
----@return table[]
+---@return dbtree.Item[]
 function M.message(parent_id, text)
   return { leaf(parent_id .. "/@message", text, "message", { kind = "message" }) }
 end
@@ -110,7 +119,7 @@ M.ROOT = "db:"
 --- neo-tree hides a tree's root by marking the first item it is given, and with
 --- no root that mark would fall on the first connection and hide it.
 ---@param children table[]
----@return table[]
+---@return dbtree.Item[]
 function M.root(children)
   return {
     {
@@ -126,7 +135,7 @@ function M.root(children)
 end
 
 ---@param connections dbtree.Connection[]
----@return table[]
+---@return dbtree.Item[]
 function M.connections(connections)
   local items = {}
   for _, connection in ipairs(connections) do
@@ -143,15 +152,15 @@ function M.connections(connections)
   return items
 end
 
----@param node NuiTree.Node
+---@param node dbtree.Item|NuiTree.Node
 ---@param names string[]
 ---@param catalog_url fun(connection: string, catalog: string): string
----@return table[]
+---@return dbtree.Item[]
 function M.catalogs(node, names, catalog_url)
   local parent = node.extra
   local items = {}
   for _, name in ipairs(names) do
-    local id = node:get_id() .. "/" .. segment(name)
+    local id = node.id .. "/" .. segment(name)
     table.insert(
       items,
       container(id, name, "catalog", {
@@ -165,14 +174,14 @@ function M.catalogs(node, names, catalog_url)
   return items
 end
 
----@param node NuiTree.Node
+---@param node dbtree.Item|NuiTree.Node
 ---@param document { schemas: dbtree.Schema[] }
----@return table[]
+---@return dbtree.Item[]
 function M.schemas(node, document)
   local parent = node.extra
   local items = {}
   for _, schema in ipairs(document.schemas or {}) do
-    local id = node:get_id() .. "/" .. segment(schema.name)
+    local id = node.id .. "/" .. segment(schema.name)
     table.insert(
       items,
       container(id, schema.name, "schema", {
@@ -196,8 +205,8 @@ local RELATION_GROUPS = {
   { folder = "materialized_views", label = "Materialized Views", kind = "materialized_view" },
 }
 
----@param node NuiTree.Node
----@return table[]
+---@param node dbtree.Item|NuiTree.Node
+---@return dbtree.Item[]
 function M.schema_groups(node)
   local parent = node.extra
   local relations = parent.record.relations or {}
@@ -211,7 +220,7 @@ function M.schema_groups(node)
       end
     end
     if #matching > 0 then
-      local id = node:get_id() .. "/@" .. group.folder
+      local id = node.id .. "/@" .. group.folder
       table.insert(
         items,
         container(id, group.label, "folder", {
@@ -229,13 +238,13 @@ function M.schema_groups(node)
   return items
 end
 
----@param node NuiTree.Node
----@return table[]
+---@param node dbtree.Item|NuiTree.Node
+---@return dbtree.Item[]
 function M.relations(node)
   local parent = node.extra
   local items = {}
   for _, relation in ipairs(parent.record) do
-    local id = node:get_id() .. "/" .. segment(relation.name)
+    local id = node.id .. "/" .. segment(relation.name)
     table.insert(
       items,
       container(id, relation.name, relation.kind, {
@@ -261,15 +270,15 @@ local RELATION_PARTS = {
   { folder = "constraints", label = "Constraints", leaf = "constraint" },
 }
 
----@param node NuiTree.Node
----@return table[]
+---@param node dbtree.Item|NuiTree.Node
+---@return dbtree.Item[]
 function M.relation_groups(node)
   local parent = node.extra
   local items = {}
   for _, part in ipairs(RELATION_PARTS) do
     local held = parent.record[part.folder] or {}
     if #held > 0 then
-      local id = node:get_id() .. "/@" .. part.folder
+      local id = node.id .. "/@" .. part.folder
       table.insert(
         items,
         container(id, part.label, "folder", {
@@ -289,13 +298,13 @@ function M.relation_groups(node)
   return items
 end
 
----@param node NuiTree.Node
----@return table[]
+---@param node dbtree.Item|NuiTree.Node
+---@return dbtree.Item[]
 function M.relation_parts(node)
   local parent = node.extra
   local items = {}
   for _, record in ipairs(parent.record) do
-    local id = node:get_id() .. "/" .. segment(record.name)
+    local id = node.id .. "/" .. segment(record.name)
     table.insert(
       items,
       leaf(id, record.name, parent.leaf, {
