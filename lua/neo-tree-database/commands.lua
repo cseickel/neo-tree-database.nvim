@@ -180,7 +180,12 @@ local function show_statement(state, build)
   end
 
   popup.show(statement, function(lines)
-    hand_off({ url = node.extra.url, lines = lines, title = statement.title })
+    hand_off({
+      state = state,
+      url = node.extra.url,
+      lines = lines,
+      title = statement.title,
+    })
   end)
 end
 
@@ -209,6 +214,7 @@ M.open_scratch = function(state)
 
   local name = quote.qualified(node.extra.schema, node.extra.relation, quoting_for(node))
   hand_off({
+    state = state,
     url = node.extra.url,
     title = node.extra.schema .. "." .. node.extra.relation,
     lines = { "select *", "from " .. name, "limit 100;" },

@@ -1,3 +1,4 @@
+local utils = require("neo-tree.utils")
 --[[
 Opening sql somewhere it can be run.
 
@@ -10,6 +11,7 @@ that wants a different window or a different naming replaces this function.
 local M = {}
 
 ---@class dbtree.Scratch
+---@field state neotree.State
 ---@field url string The connection the statement was written against.
 ---@field lines string[]
 ---@field title string What the statement describes, for a buffer name.
@@ -21,13 +23,14 @@ local M = {}
 --- and the connection the user asked for is the one that should win.
 ---@param spec dbtree.Scratch
 function M.open(spec)
-  vim.cmd("botright new")
-
-  local buffer = vim.api.nvim_get_current_buf()
+  local name = spec.title .. ".sql"
+  local buffer = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buffer, 0, -1, false, spec.lines)
+  vim.api.nvim_buf_set_name(buffer, name)
   vim.bo[buffer].filetype = "sql"
   vim.b[buffer].db = spec.url
   vim.bo[buffer].modified = false
+  utils.open_file(spec.state, name, nil, buffer)
 end
 
 return M
