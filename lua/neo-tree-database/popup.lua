@@ -1,13 +1,12 @@
 --[[
-Showing a statement.
+Showing a statement or a description.
 
-A statement is read before it is used, so it arrives in a window rather than in
-a register or a buffer. From there `y` takes it and `o` opens it somewhere it
-can be run. Nothing here runs anything.
+Either one is read before it is used, so it arrives in a window rather than in
+a register or a buffer. From there `y` takes it, and for a statement `o` opens
+it somewhere it can be run. Nothing here runs anything.
 
 The buffer keeps neo-tree's own filetype, because other parts of neo-tree
-recognise their popups by it, and takes sql syntax separately so the statement
-is still coloured.
+recognise their popups by it, and is highlighted separately as sql or markdown.
 ]]
 
 local NuiPopup = require("nui.popup")
@@ -18,38 +17,46 @@ local M = {}
 local MIN_WIDTH = 40
 local MARGIN = 8
 
---- The width and height that fit `lines` without overflowing the editor.
+---@class dbtree.Shown
+---@field title string
+---@field lines string[]
+---@field language "sql"|"markdown"
+---@field on_open fun(lines: string[])|nil Opens the lines somewhere they can be run. `o` is mapped only when this is set.
+
+--- The width that fits `lines` and `title` without overflowing the editor.
 ---@param lines string[]
 ---@param title string
----@return integer width
----@return integer height
-local function size_for(lines, title)
+---@return integer
+local function width_for(lines, title)
   local width = math.max(MIN_WIDTH, vim.fn.strdisplaywidth(title) + 4)
   for _, line in ipairs(lines) do
     width = math.max(width, vim.fn.strdisplaywidth(line) + 2)
   end
-  return math.max(1, math.min(width, vim.o.columns - MARGIN)),
-    math.max(1, math.min(#lines, vim.o.lines - MARGIN))
+  return math.max(1, math.min(width, vim.o.columns - MARGIN))
 end
 
---- Shows `statement`, with `on_open` called with its lines if the user asks for
---- it somewhere it can be edited.
----@param statement dbtree.Statement
----@param on_open fun(lines: string[])
-function M.show(statement, on_open)
-  local lines = statement.lines
+---@param rows integer
+---@return integer
+local function height_for(rows)
+  return math.max(1, math.min(rows, vim.o.lines - MARGIN))
+end
+
+---@param shown dbtree.Shown
+function M.show(shown)
+  local lines = shown.lines
   if #lines == 0 then
-    vim.notify("neo-tree database: nothing to show for " .. statement.title, vim.log.levels.WARN)
+    vim.notify("neo-tree database: nothing to show for " .. shown.title, vim.log.levels.WARN)
     return
   end
 
-  local title = statement.title .. "  (y yank, o open, q close)"
-  local width, height = size_for(lines, title)
+  local keys = shown.on_open and "y yank, o open, q close" or "y yank, q close"
+  local title = shown.title .. "  (" .. keys .. ")"
+  local width = width_for(lines, title)
 
   local window = NuiPopup(popups.popup_options(title, MIN_WIDTH, {
     relative = "editor",
     position = "50%",
-    size = { width = width, height = height },
+    size = { width = width, height = height_for(#lines) },
     zindex = 60,
     enter = true,
   }))
@@ -62,8 +69,19 @@ function M.show(statement, on_open)
     return
   end
 
-  vim.bo[window.bufnr].syntax = "sql"
+  if shown.language == "markdown" then
+    vim.treesitter.start(window.bufnr, "markdown")
+    vim.wo[window.winid].conceallevel = 2
+    vim.wo[window.winid].concealcursor = "n"
+  else
+    vim.bo[window.bufnr].syntax = shown.language
+  end
   vim.bo[window.bufnr].modifiable = false
+
+  -- The rows on screen differ from the lines held once long lines wrap and the
+  -- markdown fences are concealed.
+  local rows = vim.api.nvim_win_text_height(window.winid, {}).all
+  window:update_layout({ size = { width = width, height = height_for(rows) } })
 
   local text = table.concat(lines, "\n")
   window:map("n", "y", function()
@@ -71,13 +89,16 @@ function M.show(statement, on_open)
     vim.fn.setreg("+", text, "l")
     vim.fn.setreg("*", text, "l")
     window:unmount()
-    vim.notify("neo-tree database: copied " .. statement.title)
+    vim.notify("neo-tree database: copied " .. shown.title)
   end, { noremap = true })
 
-  window:map("n", "o", function()
-    window:unmount()
-    on_open(lines)
-  end, { noremap = true })
+  local on_open = shown.on_open
+  if on_open then
+    window:map("n", "o", function()
+      window:unmount()
+      on_open(lines)
+    end, { noremap = true })
+  end
 
   for _, key in ipairs({ "q", "<esc>" }) do
     window:map("n", key, function()

@@ -187,7 +187,7 @@ local UNDESCRIBED = {
   end,
 }
 
---- Shows db-query's hover for the relation or column under the cursor.
+--- Shows db-query's description of the relation or column under the cursor.
 ---
 --- db-query reads a database's catalog the first time it is asked about it, so
 --- the first describe of a database finds nothing and starts that read.
@@ -213,7 +213,10 @@ M.describe = function(state)
     local explain = UNDESCRIBED[err]
     return vim.notify("neo-tree database: " .. (explain and explain(node) or err), vim.log.levels.WARN)
   end
-  vim.lsp.util.open_floating_preview(lines, "markdown", { focus_id = "neo-tree-database-describe" })
+
+  local title = node.type == "column" and (extra.relation .. "." .. extra.record.name)
+    or (extra.schema .. "." .. extra.relation)
+  popup.show({ title = title, lines = lines, language = "markdown" })
 end
 
 --- Shows what `build` writes for the node under the cursor, and opens it in a
@@ -231,14 +234,19 @@ local function show_statement(state, build)
     return vim.notify("neo-tree database: " .. err, vim.log.levels.WARN)
   end
 
-  popup.show(statement, function(lines)
-    hand_off({
-      state = state,
-      url = node.extra.url,
-      lines = lines,
-      title = statement.title,
-    })
-  end)
+  popup.show({
+    title = statement.title,
+    lines = statement.lines,
+    language = "sql",
+    on_open = function(lines)
+      hand_off({
+        state = state,
+        url = node.extra.url,
+        lines = lines,
+        title = statement.title,
+      })
+    end,
+  })
 end
 
 ---@param state neotree.StateWithTree

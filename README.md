@@ -61,16 +61,17 @@ Neo-tree binds the same keys for every source, and the ones that create,
 rename, delete or move files are turned off here, because a database node has
 no path for them to act on.
 
-`K` needs [db-query.nvim](https://github.com/cseickel/db-query.nvim) and shows its hover in a
-float. db-query reads a database's catalog the first time it is asked, so the first `K` in a
-database starts that read. Press `K` again once it finishes.
+`i`, `d` and `c` open a window with the sql command for that action but do
+not run it. From there `y` copies it, `o` opens it in a buffer with the
+connection set, and `q` closes it.
+
+`K` needs [db-query.nvim](https://github.com/cseickel/db-query.nvim) and shows its description of
+the object in the same window, where `y` copies it and `q` closes it. db-query reads a database's
+catalog the first time it is asked, so the first `K` in a database starts that read. Press `K`
+again once it finishes.
 
 The tree buffer's `b:db` and `b:db_name` follow the node under the cursor, so vim-dadbod and
 db-query commands run from the tree, such as `:DBRefreshCatalog`, reach that node's database.
-
-`i`, `d` and `c` open a window with the sql command for that action but does
-not run it. From there `y` copies it, `o` opens it in a buffer with the
-connection set, and `q` closes it.
 
 ## Configuration
 
@@ -125,7 +126,7 @@ I have no immediate plans to support other databases.
 - `client.lua` — running a client, decoding json
 - `cache.lua` — what has already been asked
 - `ddl.lua` — the create, drop and change statements
-- `popup.lua` — the window a statement is shown in
+- `popup.lua` — the window a statement or a description is shown in
 - `scratch.lua` — the default `open_scratch`
 - `quote.lua` — putting a name into sql safely
 - `url.lua` — reading a url, and naming a sibling database
