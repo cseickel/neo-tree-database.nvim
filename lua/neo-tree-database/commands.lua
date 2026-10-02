@@ -14,6 +14,7 @@ local cc = require("neo-tree.sources.common.commands")
 local renderer = require("neo-tree.ui.renderer")
 
 local ddl = require("neo-tree-database.ddl")
+local focus = require("neo-tree-database.focus")
 local popup = require("neo-tree-database.popup")
 local quote = require("neo-tree-database.quote")
 local scratch = require("neo-tree-database.scratch")
@@ -162,6 +163,57 @@ M.yank_name = function(state)
   vim.fn.setreg("+", name, "c")
   vim.fn.setreg("*", name, "c")
   vim.notify("neo-tree database: copied " .. name)
+end
+
+local DESCRIBED = { table = true, view = true, materialized_view = true, column = true }
+
+--- What to tell the user for each reason db-query's describe gives as a code.
+--- Its other reasons are already sentences.
+---@type table<string, fun(node: NuiTree.Node): string>
+local UNDESCRIBED = {
+  ["reading"] = function(node)
+    return ("db-query is still reading the catalog of %s. Try again in a moment."):format(focus.db_name(node))
+  end,
+  ["no catalog"] = function(node)
+    return ("db-query could not read the catalog of %s. Run :DBRefreshCatalog to try again."):format(
+      focus.db_name(node)
+    )
+  end,
+  ["not found"] = function(node)
+    return ("db-query's catalog of %s has no %s. If it was created after the catalog was read, run :DBRefreshCatalog."):format(
+      focus.db_name(node),
+      node.name
+    )
+  end,
+}
+
+--- Shows db-query's hover for the relation or column under the cursor.
+---
+--- db-query reads a database's catalog the first time it is asked about it, so
+--- the first describe of a database finds nothing and starts that read.
+---@param state neotree.StateWithTree
+M.describe = function(state)
+  local node = current(state)
+  if not node or not DESCRIBED[node.type] then
+    return vim.notify("neo-tree database: nothing here to describe", vim.log.levels.WARN)
+  end
+
+  local scheme = schemes.of(node.extra.url)
+  if not scheme then
+    return vim.notify("neo-tree database: cannot describe " .. node.extra.url, vim.log.levels.WARN)
+  end
+
+  local extra = node.extra
+  local lines, err = require("db-query").describe({
+    url = extra.url,
+    relation = scheme.catalog_name(extra.catalog, extra.schema, extra.relation),
+    column = node.type == "column" and extra.record.name or nil,
+  })
+  if not lines then
+    local explain = UNDESCRIBED[err]
+    return vim.notify("neo-tree database: " .. (explain and explain(node) or err), vim.log.levels.WARN)
+  end
+  vim.lsp.util.open_floating_preview(lines, "markdown", { focus_id = "neo-tree-database-describe" })
 end
 
 --- Shows what `build` writes for the node under the cursor, and opens it in a

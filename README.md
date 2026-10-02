@@ -48,6 +48,7 @@ the file the url names.
 | `<cr>`, `l`, `<space>` | Expand or collapse                              |
 | `R`                    | Refresh the current node                        |
 | `y`                    | Copy the sql name of the thing under the cursor |
+| `K`                    | Describe a table, view or column, with comments |
 | `i`                    | Show the CREATE statement for this object       |
 | `d`                    | Show the DROP statement for this object         |
 | `c`                    | Show the ALTER statement for this object        |
@@ -59,6 +60,13 @@ the file the url names.
 Neo-tree binds the same keys for every source, and the ones that create,
 rename, delete or move files are turned off here, because a database node has
 no path for them to act on.
+
+`K` needs [db-query.nvim](https://github.com/cseickel/db-query.nvim) and shows its hover in a
+float. db-query reads a database's catalog the first time it is asked, so the first `K` in a
+database starts that read. Press `K` again once it finishes.
+
+The tree buffer's `b:db` and `b:db_name` follow the node under the cursor, so vim-dadbod and
+db-query commands run from the tree, such as `:DBRefreshCatalog`, reach that node's database.
 
 `i`, `d` and `c` open a window with the sql command for that action but does
 not run it. From there `y` copies it, `o` opens it in a buffer with the
@@ -111,6 +119,7 @@ I have no immediate plans to support other databases.
 - `init.lua` — the source: what expands, what fetches, the default config
 - `commands.lua` — what the keys do
 - `components.lua` — the icon and the detail text on each line
+- `focus.lua` — keeping `b:db` on the node under the cursor
 - `items.lua` — turning a fetched catalog into nodes, and every node id
 - `connections.lua` — reading the connection list
 - `client.lua` — running a client, decoding json

@@ -26,6 +26,7 @@ local MODULES = {
 ---@field introspect fun(catalog_url: string, catalog: string): dbtree.Request
 ---@field ddl fun(relation: dbtree.Relation, schema: string): string[]
 ---@field column_definition fun(column: dbtree.Column): string
+---@field catalog_name fun(catalog: string, schema: string, relation: string): string[]
 
 --- The module that speaks `connection`, nil when nothing here does.
 ---

@@ -133,6 +133,16 @@ function M.introspect(catalog_url, catalog)
   }))
 end
 
+--- The name db-query's catalog knows a relation by. One catalog holds every
+--- attached database, so the name starts at the database.
+---@param catalog string
+---@param schema string
+---@param relation string
+---@return string[]
+function M.catalog_name(catalog, schema, relation)
+  return { catalog, schema, relation }
+end
+
 --- How `column` reads inside a CREATE TABLE or after an ADD COLUMN.
 ---@param column dbtree.Column
 ---@return string

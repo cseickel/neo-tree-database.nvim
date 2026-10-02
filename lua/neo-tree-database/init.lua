@@ -344,6 +344,7 @@ local mappings = {
   ["l"] = "open",
   ["R"] = "refresh_node",
   ["y"] = "yank_name",
+  ["K"] = "describe",
   ["i"] = "object_info",
   ["d"] = "object_drop",
   ["c"] = "object_change",
@@ -380,6 +381,7 @@ M.default_config = {
 ---@param global_config neotree.Config.Base
 M.setup = function(config, global_config)
   M.config = config
+  require("neo-tree-database.focus").track(M.name)
 end
 
 return M

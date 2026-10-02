@@ -152,6 +152,16 @@ function M.introspect(catalog_url, catalog)
   return invoke(catalog_url, INTROSPECT)
 end
 
+--- The name db-query's catalog knows a relation by. The catalog is the
+--- database the url connects to, so the name starts at the schema.
+---@param catalog string
+---@param schema string
+---@param relation string
+---@return string[]
+function M.catalog_name(catalog, schema, relation)
+  return { schema, relation }
+end
+
 --- How a column states where its value comes from. An identity column and a
 --- generated column both keep their expression where a default would go, and
 --- writing that expression out as a DEFAULT would describe a column that
