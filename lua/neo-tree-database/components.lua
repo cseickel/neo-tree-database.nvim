@@ -3,7 +3,8 @@ What each line of the tree shows.
 
 `icon` says what kind of thing a node is, and `detail` says the one fact about
 it worth reading without opening it: how many tables a schema holds, roughly
-how many rows a table holds, what type a column is, what an index covers.
+how many rows a table holds, what type a column or an argument is, what an
+index covers, what a function returns.
 `privilege` is one column of a grant row's privileges.
 
 The common components are merged in below, so `indent`, `container` and the
@@ -13,6 +14,7 @@ rest stay available to a renderer.
 local common = require("neo-tree.sources.common.components")
 local highlights = require("neo-tree.ui.highlights")
 local privileges = require("neo-tree-database.privileges")
+local routines = require("neo-tree-database.routines")
 local url = require("neo-tree-database.url")
 
 local M = {}
@@ -34,6 +36,9 @@ local ICONS = {
   constraint = "\u{f023}",
   sequence = "\u{f162}",
   routine = "\u{f0295}",
+  overloaded_routine = "\u{f0295}",
+  ["return"] = "\u{f061}",
+  field = "\u{eb5f}",
   role = "\u{f007}",
   public = "\u{f0c0}",
   grant = "\u{f084}",
@@ -119,6 +124,13 @@ local function approximate(rows)
   return ("~%d"):format(rows)
 end
 
+---@param count integer
+---@param noun string
+---@return string
+local function counted(count, noun)
+  return count .. " " .. noun .. (count == 1 and "" or "s")
+end
+
 ---@type table<string, fun(node: NuiTree.Node): string|nil>
 local DETAIL = {}
 
@@ -130,7 +142,7 @@ DETAIL.schema = function(node)
   local schema = node.extra.record
   local relations = #(schema.relations or {})
   if relations > 0 then
-    return relations == 1 and "1 relation" or (relations .. " relations")
+    return counted(relations, "relation")
   end
   if #(schema.sequences or {}) + #(schema.functions or {}) == 0 then
     return "empty"
@@ -173,13 +185,29 @@ DETAIL.constraint = function(node)
   return node.extra.record.type
 end
 
---- A plain function says nothing, and any other kind says what it is.
+DETAIL.overloaded_routine = function(node)
+  return counted(#node.extra.record, "overload")
+end
+
+--- An overload is told apart from its siblings by how many arguments it takes.
 DETAIL.routine = function(node)
-  local kind = node.extra.record.kind
-  if kind == "function" then
+  if not node.extra.overload then
     return nil
   end
-  return (kind:gsub("_", " "))
+  return counted(#routines.inputs(node.extra.record), "arg")
+end
+
+DETAIL["return"] = function(node)
+  return node.extra.record.text
+end
+
+DETAIL.field = function(node)
+  local field = node.extra.record
+  local text = field.type or ""
+  if field.default then
+    text = text .. " DEFAULT " .. field.default
+  end
+  return text
 end
 
 DETAIL.role = function(node)

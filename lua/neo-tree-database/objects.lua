@@ -48,13 +48,6 @@ local M = {}
 ---@field definition string
 ---@field grants dbtree.Grant[]|nil
 
----@class dbtree.Routine
----@field name string
----@field kind "function"|"procedure"|"aggregate"|"macro"|"table_macro"
----@field arguments string|nil postgres's argument types, which tell overloads apart.
----@field definition string|nil
----@field grants dbtree.Grant[]|nil
-
 ---@class dbtree.Schema
 ---@field name string
 ---@field relations dbtree.Relation[]
@@ -109,27 +102,30 @@ function M.schemas(node, document)
   return vim.list_extend(result, grants.folder(node, grants.rows(grants.database_target(parent.catalog), document.grants)))
 end
 
---- The folders a schema shows. A relation folder holds the relations of one
---- kind, and the others hold the schema field they are named after.
+--- The folders a schema shows, each holding the schema field it names, and
+--- only the objects of one kind where it names a kind.
 local SCHEMA_FOLDERS = {
-  { folder = "tables", label = "Tables", kind = "table" },
-  { folder = "views", label = "Views", kind = "view" },
-  { folder = "materialized_views", label = "Materialized Views", kind = "materialized_view" },
-  { folder = "sequences", label = "Sequences" },
-  { folder = "functions", label = "Functions" },
+  { folder = "tables", label = "Tables", field = "relations", kind = "table" },
+  { folder = "views", label = "Views", field = "relations", kind = "view" },
+  { folder = "materialized_views", label = "Materialized Views", field = "relations", kind = "materialized_view" },
+  { folder = "sequences", label = "Sequences", field = "sequences" },
+  { folder = "functions", label = "Functions", field = "functions", kind = "function" },
+  { folder = "procedures", label = "Procedures", field = "functions", kind = "procedure" },
+  { folder = "aggregates", label = "Aggregates", field = "functions", kind = "aggregate" },
+  { folder = "macros", label = "Macros", field = "functions", kind = "macro" },
+  { folder = "table_macros", label = "Table Macros", field = "functions", kind = "table_macro" },
 }
 
----@param relations dbtree.Relation[]
----@param kind string
----@return dbtree.Relation[]
-local function of_kind(relations, kind)
-  local matching = {}
-  for _, relation in ipairs(relations) do
-    if relation.kind == kind then
-      table.insert(matching, relation)
-    end
+---@param records table[]
+---@param kind string|nil
+---@return table[]
+local function of_kind(records, kind)
+  if not kind then
+    return records
   end
-  return matching
+  return vim.tbl_filter(function(record)
+    return record.kind == kind
+  end, records)
 end
 
 ---@param node dbtree.Item|NuiTree.Node
@@ -140,7 +136,7 @@ function M.schema_folders(node)
 
   local result = {}
   for _, group in ipairs(SCHEMA_FOLDERS) do
-    local held = group.kind and of_kind(schema.relations or {}, group.kind) or (schema[group.folder] or {})
+    local held = of_kind(schema[group.field] or {}, group.kind)
     if #held > 0 then
       table.insert(
         result,
@@ -222,50 +218,30 @@ function M.relation_parts(node)
   return result
 end
 
---- A sequence or a function, whose only child is its Grants folder. It is a
---- leaf where it has no grants, as everywhere in duckdb, which keeps none.
----@param node dbtree.Item|NuiTree.Node
----@param name string
----@param node_type string
----@param record dbtree.Sequence|dbtree.Routine
----@param target dbtree.GrantTarget
----@return dbtree.Item
-local function granted(node, name, node_type, record, target)
-  local id = node.id .. "/" .. items.segment(name)
-  local extra = items.inherit(node.extra, { kind = node_type, record = record, target = target })
-  if #(record.grants or {}) > 0 then
-    return items.container(id, name, node_type, extra)
-  end
-  return items.leaf(id, name, node_type, extra)
-end
-
+--- The sequences in a Sequences folder. A sequence's only child is its Grants
+--- folder, so it is a leaf where it has no grants, as everywhere in duckdb,
+--- which keeps none.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
 function M.sequences(node)
-  local schema = node.extra.schema
   local result = {}
   for _, sequence in ipairs(node.extra.record) do
-    table.insert(result, granted(node, sequence.name, "sequence", sequence, grants.sequence_target(schema, sequence)))
+    local id = node.id .. "/" .. items.segment(sequence.name)
+    local extra = items.inherit(node.extra, {
+      kind = "sequence",
+      record = sequence,
+      target = grants.sequence_target(node.extra.schema, sequence),
+    })
+    local build = #(sequence.grants or {}) > 0 and items.container or items.leaf
+    table.insert(result, build(id, sequence.name, "sequence", extra))
   end
   return result
 end
 
+--- The Grants folder of a sequence.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.routines(node)
-  local schema = node.extra.schema
-  local result = {}
-  for _, routine in ipairs(node.extra.record) do
-    local name = items.signature(routine.name, routine.arguments)
-    table.insert(result, granted(node, name, "routine", routine, grants.routine_target(schema, routine)))
-  end
-  return result
-end
-
---- The Grants folder of a sequence or a function.
----@param node dbtree.Item|NuiTree.Node
----@return dbtree.Item[]
-function M.grant_folder(node)
+function M.sequence_grants(node)
   return grants.folder(node, grants.rows(node.extra.target, node.extra.record.grants))
 end
 

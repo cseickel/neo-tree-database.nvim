@@ -122,8 +122,8 @@ end
 
 --- What each node type is called in sql. A column, an index and a constraint
 --- are named on their own, because that is the form they are typed in.
---- Everything a schema holds is qualified by it, and a function also carries
---- its argument types, which tell it apart from its overloads.
+--- Everything a schema holds is qualified by it, and a single function also
+--- carries its argument types, which tell it apart from its overloads.
 ---
 --- The root, a heading, a placeholder, an error message and a grant name
 --- nothing, and copying their label would put the word `Databases` or the text
@@ -147,6 +147,9 @@ local SQL_NAMES = {
   end,
   routine = function(extra, quoting)
     return items.signature(quote.qualified(extra.schema, extra.record.name, quoting), extra.record.arguments)
+  end,
+  overloaded_routine = function(extra, quoting)
+    return quote.qualified(extra.schema, extra.record[1].name, quoting)
   end,
   role = function(extra, quoting)
     return quote.identifier(extra.record.name, quoting)

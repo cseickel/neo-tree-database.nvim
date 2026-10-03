@@ -3,8 +3,9 @@ The pieces every tree item is built from, and the levels above a catalog.
 
 The building is done a level at a time, because a catalog holding ten thousand
 tables would otherwise become a hundred thousand nodes the moment it was
-opened, all of them collapsed and none of them looked at. `objects.lua` builds
-what a catalog holds, and `roles.lua` and `grants.lua` build who can reach it.
+opened, all of them collapsed and none of them looked at. `objects.lua` and
+`routines.lua` build what a catalog holds, and `roles.lua` and `grants.lua`
+build who can reach it.
 
 Every container is built with a single child saying it has not loaded yet. That
 child is what draws the expander arrow, and neo-tree replaces it wholesale when
@@ -97,6 +98,26 @@ function M.signature(name, arguments)
     return name .. "(" .. arguments .. ")"
   end
   return name
+end
+
+--- `routines` gathered into functions, each the overloads sharing a kind and a
+--- name, in the order given. The tree and a role's grants number overloads by
+--- their place here, so both read the same number for the same overload.
+---@param routines dbtree.Routine[]
+---@return dbtree.Routine[][]
+function M.overloads(routines)
+  local functions, by_key = {}, {}
+  for _, routine in ipairs(routines) do
+    local key = routine.kind .. "/" .. routine.name
+    local overloads = by_key[key]
+    if not overloads then
+      overloads = {}
+      by_key[key] = overloads
+      table.insert(functions, overloads)
+    end
+    table.insert(overloads, routine)
+  end
+  return functions
 end
 
 --- What a node shows in place of children it could not fetch. Rendering this

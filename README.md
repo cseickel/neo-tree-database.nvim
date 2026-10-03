@@ -1,12 +1,12 @@
 # neo-tree-database
 
 ⚠️ This is a work in progress. What you see here today is **100% unreviewed AI slop**. ⚠️
- 
+
 A neo-tree source that browses databases: connections, catalogs, schemas, tables and views, each
 relation's columns, indexes and constraints, sequences, functions, roles, and the grants on all of
 them.
 
-This is a replacemnt for the tree in vim-dadbod-ui. I use it along with vim-dadbod, which manages the actual db connections and executes queries.
+This is a replacement for the tree in vim-dadbod-ui. I use it along with vim-dadbod, which manages the actual db connections and executes queries.
 
 ## Installing
 
@@ -42,6 +42,36 @@ A postgres connection lists every database on its server, each reached by its ow
 covers the whole server. A duckdb connection lists the catalogs its own process can see, which is
 the file the url names.
 
+## Functions
+
+A schema lists its functions in a folder per kind: Functions, Procedures and Aggregates in
+postgres, Macros and Table Macros in duckdb. Each function is listed once by its name. A name with
+several overloads shows how many it has and opens onto `overload 1` to `overload N`, numbered in
+the order the catalog lists them, each showing how many arguments it takes.
+
+A function, or one overload, opens onto:
+
+- **Args**: the arguments a call passes, each with its type and default. An INOUT or VARIADIC
+  argument is marked as such, and one declared without a name is numbered the way the function's
+  body refers to it, such as `$1`.
+- **return**: what it returns, such as `integer`, `SETOF text` or `TABLE`. Where it returns a
+  table or a composite type, the row opens onto the columns. OUT arguments and the columns of a
+  RETURNS TABLE are listed here, and an OUT argument declared without a name is `column1`, as
+  postgres names it.
+- **Grants**: who was granted what on it.
+
+A function with none of those is a leaf. A procedure has no return row unless it has OUT
+arguments. A duckdb macro has only its Args, because duckdb keeps neither a return type nor a
+definition for it, and a macro parameter declared without a type shows none.
+
+`i` on a function shows its definition, and on a name with several overloads the definition of
+every overload. `d` on that name drops every overload in one statement, and `c` renames each of
+them. duckdb drops every overload of a macro at once, so `d` on one overload of a macro is refused,
+and so is `c` on any macro.
+
+`y` copies `schema.name(argument types)` on a function, and `schema.name` on a name with several
+overloads.
+
 ## Roles and grants
 
 A postgres connection has a Roles folder beside its databases. Each role opens onto:
@@ -62,6 +92,11 @@ granted what on it. A table's Grants folder also lists grants on its columns, na
 `bob (email)`, and under a role the same grant is named `public.orders.email`. An object that was
 never granted on shows its owner holding every privilege, which is what postgres gives an owner by
 default.
+
+Under a role, a grant on a function is named without its argument types, as `public.calc`. Where
+the name has several overloads, a role holding the same privileges on every overload gets one row,
+and `i` on that row writes a GRANT naming every overload. Otherwise the role gets one row per
+overload it holds anything on, numbered as the tree numbers them, as `public.calc (2)`.
 
 Only direct grants are shown. What a role can reach through another role is found by opening its
 Member of folder. Grants on objects the tree does not list are not shown, such as a partition, an
@@ -229,6 +264,7 @@ I have no immediate plans to support other databases.
 | `focus.lua`       | keeping `b:db` on the node under the cursor               |
 | `items.lua`       | node ids, and the connections                             |
 | `objects.lua`     | turning a fetched catalog into nodes                      |
+| `routines.lua`    | each function's name, overloads, arguments and return     |
 | `roles.lua`       | the Roles folder and each role                            |
 | `grants.lua`      | the Grants folders, under an object and under a role      |
 | `connections.lua` | reading the connection list                               |

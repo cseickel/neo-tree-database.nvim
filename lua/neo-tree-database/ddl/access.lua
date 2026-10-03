@@ -5,6 +5,7 @@ A grant is written as the GRANT that made it and dropped as the REVOKE that
 takes it back. Nothing alters a grant in place, so a grant has no change.
 ]]
 
+local grants = require("neo-tree-database.grants")
 local items = require("neo-tree-database.items")
 local quote = require("neo-tree-database.quote")
 
@@ -25,6 +26,7 @@ local ON = {
   aggregate = "ROUTINE",
 }
 
+--- The object a GRANT names, listing every overload of a function it is on.
 ---@param target dbtree.GrantTarget
 ---@param quoting dbtree.Quoting
 ---@return string
@@ -32,7 +34,14 @@ local function object(target, quoting)
   if not target.schema then
     return ON[target.kind] .. " " .. quote.identifier(target.name, quoting)
   end
-  return ON[target.kind] .. " " .. items.signature(quote.qualified(target.schema, target.name, quoting), target.arguments)
+  local name = quote.qualified(target.schema, target.name, quoting)
+  if not target.arguments then
+    return ON[target.kind] .. " " .. name
+  end
+  local signatures = vim.tbl_map(function(arguments)
+    return items.signature(name, arguments)
+  end, target.arguments)
+  return ON[target.kind] .. " " .. table.concat(signatures, ", ")
 end
 
 --- `privileges` as a GRANT lists them, each naming the column when the grant
@@ -60,9 +69,7 @@ end
 ---@param row dbtree.GrantRow
 ---@return string
 local function title(row)
-  local target = row.target
-  local name = target.schema and (target.schema .. "." .. target.name) or target.name
-  return (row.grant.grantee or "PUBLIC") .. " on " .. name .. (target.column and ("." .. target.column) or "")
+  return (row.grant.grantee or "PUBLIC") .. " on " .. grants.object_name(row.target)
 end
 
 --- The privileges held with grant option are granted in a statement of their

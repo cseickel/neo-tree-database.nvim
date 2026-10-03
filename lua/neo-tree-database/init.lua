@@ -19,6 +19,7 @@ local grants = require("neo-tree-database.grants")
 local items = require("neo-tree-database.items")
 local objects = require("neo-tree-database.objects")
 local roles = require("neo-tree-database.roles")
+local routines = require("neo-tree-database.routines")
 local schemes = require("neo-tree-database.schemes")
 
 local log = require("neo-tree.log")
@@ -85,7 +86,12 @@ local FOLDERS = {
   views = objects.relations,
   materialized_views = objects.relations,
   sequences = objects.sequences,
-  functions = objects.routines,
+  functions = routines.names,
+  procedures = routines.names,
+  aggregates = routines.names,
+  macros = routines.names,
+  table_macros = routines.names,
+  arguments = routines.arguments,
   columns = objects.relation_parts,
   indexes = objects.relation_parts,
   constraints = objects.relation_parts,
@@ -125,8 +131,10 @@ local HELD = {
   table = objects.relation_folders,
   view = objects.relation_folders,
   materialized_view = objects.relation_folders,
-  sequence = objects.grant_folder,
-  routine = objects.grant_folder,
+  sequence = objects.sequence_grants,
+  overloaded_routine = routines.overloads,
+  routine = routines.parts,
+  ["return"] = routines.returned,
   role = roles.parts,
   public = roles.parts,
   folder = function(node)
@@ -216,8 +224,8 @@ local function fetch(state, node, documents)
   end
 end
 
---- Whether `node` opens onto anything. A sequence or a function is a leaf
---- where it has no grants to show, so the type alone does not answer this.
+--- Whether `node` opens onto anything. A sequence, a function or a return is a
+--- leaf where it has nothing to show, so the type alone does not answer this.
 ---@param node NuiTree.Node
 ---@return boolean
 function M.is_container(node)

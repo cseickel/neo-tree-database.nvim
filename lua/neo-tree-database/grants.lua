@@ -9,6 +9,10 @@ database itself shows, so each database is asked once for both.
 Only direct grants are shown. Access a role has through another role is found
 by following its Member of folder to that role.
 
+Under a role, a function with several overloads is one row when the role holds
+the same privileges on every overload, and otherwise one row per overload it
+holds anything on, numbered as the tree numbers them.
+
 The role side sees only what the catalog document holds: the database, its
 schemas, and the tables, views, sequences and functions the tree lists. A grant
 on a partition, on an object an extension created, on anything in pg_catalog,
@@ -31,7 +35,8 @@ local M = {}
 ---@field kind string `database`, `schema`, a relation kind, `sequence`, or a function kind.
 ---@field name string
 ---@field schema string|nil Nil for a database or a schema.
----@field arguments string|nil A function's argument types.
+---@field arguments string[]|nil For a function, the argument types of each overload the grant is on.
+---@field overload integer|nil The overload's number, where the grant is on one of several.
 ---@field column string|nil Set for a grant on one column of a relation.
 
 ---@class dbtree.GrantRow
@@ -64,11 +69,68 @@ function M.sequence_target(schema, sequence)
   return { kind = "sequence", schema = schema, name = sequence.name }
 end
 
+--- The target of a grant on `routine`. `overload` is its number among the
+--- overloads of its name, and nil where it has none.
 ---@param schema string
 ---@param routine dbtree.Routine
+---@param overload integer|nil
 ---@return dbtree.GrantTarget
-function M.routine_target(schema, routine)
-  return { kind = routine.kind, schema = schema, name = routine.name, arguments = routine.arguments }
+function M.routine_target(schema, routine, overload)
+  return {
+    kind = routine.kind,
+    schema = schema,
+    name = routine.name,
+    arguments = routine.arguments and { routine.arguments },
+    overload = overload,
+  }
+end
+
+--- Whether every one of `overloads` grants `grant`'s grantee the same
+--- privileges as `grant` does.
+---@param overloads dbtree.Routine[]
+---@param grant dbtree.Grant
+---@return boolean
+local function granted_on_each(overloads, grant)
+  for _, routine in ipairs(overloads) do
+    local same = vim.iter(routine.grants or {}):any(function(other)
+      return other.grantee == grant.grantee and vim.deep_equal(other.privileges, grant.privileges)
+    end)
+    if not same then
+      return false
+    end
+  end
+  return true
+end
+
+--- The grants on `overloads`, every overload of one function. A grantee holding
+--- the same privileges on each overload gets one row naming the function, and
+--- every other grant gets a row naming its overload.
+---@param schema string
+---@param overloads dbtree.Routine[]
+---@return dbtree.GrantRow[]
+local function routine_rows(schema, overloads)
+  if #overloads == 1 then
+    return M.rows(M.routine_target(schema, overloads[1]), overloads[1].grants)
+  end
+
+  local whole = M.routine_target(schema, overloads[1])
+  if whole.arguments then
+    whole.arguments = vim.tbl_map(function(routine)
+      return routine.arguments
+    end, overloads)
+  end
+
+  local rows = {}
+  for number, routine in ipairs(overloads) do
+    for _, grant in ipairs(routine.grants or {}) do
+      if not granted_on_each(overloads, grant) then
+        table.insert(rows, { target = M.routine_target(schema, routine, number), grant = grant })
+      elseif number == 1 then
+        table.insert(rows, { target = whole, grant = grant })
+      end
+    end
+  end
+  return rows
 end
 
 --- Each grant in `list` paired with `target`. `list` is nil where the database
@@ -147,15 +209,19 @@ function M.grantees(node)
   return result
 end
 
---- How a row on the role side is named: by the object it grants on, such as
---- `public.orders`, or `public.orders.email` for a grant on one column.
+--- The object a grant is on, as a row on the role side names it, such as
+--- `public.orders`, `public.orders.email` for a grant on one column, or
+--- `public.total (2)` for a grant on one overload of several.
 ---@param target dbtree.GrantTarget
 ---@return string
-local function object_name(target)
+function M.object_name(target)
   if not target.schema then
     return target.name
   end
-  local name = target.schema .. "." .. items.signature(target.name, target.arguments)
+  local name = target.schema .. "." .. target.name
+  if target.overload then
+    return name .. " (" .. target.overload .. ")"
+  end
   return target.column and (name .. "." .. target.column) or name
 end
 
@@ -173,8 +239,8 @@ local function catalog_rows(catalog, document)
     for _, sequence in ipairs(schema.sequences or {}) do
       vim.list_extend(rows, M.rows(M.sequence_target(schema.name, sequence), sequence.grants))
     end
-    for _, routine in ipairs(schema.functions or {}) do
-      vim.list_extend(rows, M.rows(M.routine_target(schema.name, routine), routine.grants))
+    for _, overloads in ipairs(items.overloads(schema.functions or {})) do
+      vim.list_extend(rows, routine_rows(schema.name, overloads))
     end
   end
   return rows
@@ -207,10 +273,10 @@ function M.held(node, document)
     local target = row.target
     local id = node.id
       .. "/"
-      .. segments(target.kind, target.schema or "", items.signature(target.name, target.arguments), target.column)
+      .. segments(target.kind, target.schema or "", target.name, tostring(target.overload or ""), target.column)
     table.insert(
       result,
-      items.leaf(id, object_name(target), "grant", items.inherit(extra, { kind = "grant", record = row }))
+      items.leaf(id, M.object_name(target), "grant", items.inherit(extra, { kind = "grant", record = row }))
     )
   end
   return result

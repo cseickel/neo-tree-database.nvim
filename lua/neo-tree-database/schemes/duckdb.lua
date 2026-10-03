@@ -60,10 +60,11 @@ end
 -- says which columns are nullable, so it is dropped here rather than listed
 -- once per column under Constraints.
 --
--- A macro with overloads is one row per overload, folded here into one
--- function. A macro carries no definition, because duckdb_functions() drops
--- parameter defaults and a CREATE MACRO rebuilt from it would differ from the
--- one that was run.
+-- A macro with overloads is one row per overload, and each is listed. A macro
+-- carries no definition, because duckdb_functions() drops parameter defaults
+-- and a CREATE MACRO rebuilt from it would differ from the one that was run.
+-- A parameter declared without a type has a null type, and a macro declares no
+-- return type at all.
 local INTROSPECT = [[
 select json_object('schemas', coalesce((
   select to_json(list(json_object(
@@ -134,14 +135,15 @@ select json_object('schemas', coalesce((
     'functions', coalesce((
       select to_json(list(json_object(
         'name', f.function_name,
-        'kind', f.function_type
-      ) order by f.function_name))
-      from (
-        select distinct database_name, schema_name, function_name, function_type
-        from duckdb_functions()
-        where not internal
-      ) f
-      where f.database_name = s.database_name and f.schema_name = s.schema_name
+        'kind', f.function_type,
+        'args', to_json(list_transform(
+          list_zip(f.parameters, f.parameter_types),
+          lambda p: json_object('name', p[1], 'type', p[2], 'mode', 'in')
+        ))
+      ) order by f.function_name, len(f.parameters), f.parameters::varchar))
+      from duckdb_functions() f
+      where not f.internal
+        and f.database_name = s.database_name and f.schema_name = s.schema_name
     ), '[]'::json)
   ) order by s.schema_name))
   from duckdb_schemas() s

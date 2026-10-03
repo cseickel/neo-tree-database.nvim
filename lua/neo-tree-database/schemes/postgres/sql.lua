@@ -112,7 +112,10 @@ select json_build_object(
 -- postgres 17 began storing, which the column list already reports. A column's
 -- acl is read without a default, because a column has no privileges of its own
 -- until one is granted on it. pg_get_functiondef raises on an aggregate, and
--- one aggregate would fail the whole query.
+-- one aggregate would fail the whole query. A function's arguments are read
+-- from proallargtypes, which holds output arguments too and is null when every
+-- argument is an input, so proargtypes stands in for it then. A procedure has
+-- no return, and the void postgres stores for one is not shown as one.
 M.INTROSPECT = [[
 select json_build_object(
   'grants', (
@@ -224,6 +227,38 @@ select json_build_object(
                   when 'a' then 'aggregate'
                   else 'function'
                 end,
+        'args', coalesce((
+          select json_agg(json_build_object(
+            'name', nullif(a.name, ''),
+            'type', format_type(a.type, null),
+            'mode', case a.mode
+                      when 'o' then 'out'
+                      when 'b' then 'inout'
+                      when 'v' then 'variadic'
+                      when 't' then 'table'
+                      else 'in'
+                    end,
+            'default', pg_get_function_arg_default(p.oid, a.n::integer)
+          ) order by a.n)
+          from unnest(
+            coalesce(p.proallargtypes, p.proargtypes::oid[]),
+            p.proargmodes,
+            p.proargnames
+          ) with ordinality as a(type, mode, name, n)
+        ), '[]'::json),
+        'returns', case when p.prokind <> 'p' then json_build_object(
+          'type', format_type(p.prorettype, null),
+          'set', p.proretset,
+          'columns', (
+            select json_agg(json_build_object(
+              'name', ra.attname,
+              'type', format_type(ra.atttypid, ra.atttypmod)
+            ) order by ra.attnum)
+            from pg_type rt
+            join pg_attribute ra on ra.attrelid = rt.typrelid
+            where rt.oid = p.prorettype and ra.attnum > 0 and not ra.attisdropped
+          )
+        ) end,
         'definition', case when p.prokind <> 'a' then rtrim(pg_get_functiondef(p.oid), E'\n') || ';' end,
         'grants', ]] .. grants_or_default("p.proacl", "f", "p.proowner") .. [[
       ) order by p.proname, pg_get_function_identity_arguments(p.oid))
