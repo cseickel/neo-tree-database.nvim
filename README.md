@@ -58,22 +58,88 @@ place. The roles postgres predefines (`pg_*`) are left out of the list. PUBLIC i
 roles, with only its grants.
 
 The database, each schema, table, view, sequence and function has a Grants folder listing who was
-granted what on it. A table's Grants folder also lists grants on its columns, such as
-`bob  SELECT (email)`. An object that was never granted on shows its owner holding every privilege,
-which is what postgres gives an owner by default.
+granted what on it. A table's Grants folder also lists grants on its columns, named like
+`bob (email)`, and under a role the same grant is named `public.orders.email`. An object that was
+never granted on shows its owner holding every privilege, which is what postgres gives an owner by
+default.
 
 Only direct grants are shown. What a role can reach through another role is found by opening its
 Member of folder. Grants on objects the tree does not list are not shown, such as a partition, an
 object an extension created, or anything in `pg_catalog`.
 
-A grant's privileges show beside its name when the window is at least 64 columns wide. In a
-narrower window, `i` shows them as the GRANT.
-
 duckdb has no roles or grants.
+
+### Privilege columns
+
+A grant row shows its privileges in columns to the right of its name. Each column shows every
+privilege it lists that the row's kind of object can have: held ones in
+`NeoTreeDatabasePrivilege`, the rest in `NeoTreeDatabasePrivilegeNotHeld`. `i` on a grant shows
+the full GRANT, including privileges no column lists.
+
+```
+alice › Grants › app
+├─ app                 CREATE  CONNECT TEMP
+├─ public              CREATE  USAGE
+├─ public.orders       SELECT  INSERT  UPDATE DELETE TRUNCATE
+└─ public.orders.email SELECT  INSERT  UPDATE
+```
+
+As the window narrows, every column switches to a shorter form at once, so the columns still line
+up:
+
+| Window width | Privileges are written as                     | Example          |
+|--------------|-----------------------------------------------|------------------|
+| 75 and up    | full words, TEMPORARY as TEMP                 | `SELECT  INSERT` |
+| 50 to 74     | 3 letters                                     | `SEL INS`        |
+| 45 to 49     | 2 letters, TC for TRUNCATE and TG for TRIGGER | `SE IN`          |
+| below 45     | psql's one-letter codes                       | `r a`            |
+
+Each column is a `privilege` component, and `grants` lists the privileges it shows. These are the
+default columns, which leave out REFERENCES, TRIGGER and MAINTAIN:
+
+```lua
+database = {
+  renderers = {
+    grant = {
+      { "indent" },
+      { "icon" },
+      {
+        "container",
+        content = {
+          { "name", zindex = 10 },
+          { "privilege", grants = { "SELECT", "CREATE", "EXECUTE" }, zindex = 10, align = "right" },
+          { "privilege", grants = { "INSERT", "USAGE", "CONNECT" }, zindex = 10, align = "right" },
+          { "privilege", grants = { "UPDATE", "TEMPORARY" }, zindex = 10, align = "right" },
+          { "privilege", grants = { "DELETE" }, zindex = 10, align = "right" },
+          { "privilege", grants = { "TRUNCATE" }, zindex = 10, align = "right" },
+        },
+      },
+    },
+  },
+},
+```
+
+`levels` on a column sets the window widths where it switches form. The default is
+`{ full = 75, three = 50, two = 45 }`, and below `two` it uses the codes. Those numbers are worked
+out for the default columns, so columns of your own need numbers of their own. Give every column the
+same `levels`, or they will switch form at different widths and stop lining up.
+
+Each column is as wide as its longest privilege. No kind of object can have two of the privileges
+one default column lists. When a column of your own does match more than one, it shows all of
+them and shortens them further until they fit, as in `SE US` in a column of full words.
+
+A privilege held with grant option is drawn in `NeoTreeDatabasePrivilegeGrantable`. By default
+that group is a copy of `NeoTreeDatabasePrivilege` with an underline, made again after every
+colorscheme loads. Set `grant_option = "asterisk"` on a column to mark it with a `*`
+after the privilege instead, the way psql does.
 
 ## Highlights
 
-- `NeoTreeDatabasePrivilege`
+| Group                               | Default                                |
+|-------------------------------------|----------------------------------------|
+| `NeoTreeDatabasePrivilege`          | links to `Keyword`                     |
+| `NeoTreeDatabasePrivilegeNotHeld`   | links to `NeoTreeDimText`              |
+| `NeoTreeDatabasePrivilegeGrantable` | `NeoTreeDatabasePrivilege`, underlined |
 
 ## Keys
 
@@ -152,22 +218,25 @@ I have no immediate plans to support other databases.
 
 ## Layout
 
-- `init.lua` — the source: what expands and what fetches
-- `config.lua` — the default config: renderers and keys
-- `commands.lua` — what the keys do
-- `components.lua` — the icon and the detail text on each line
-- `highlights.lua` — the highlight groups this source defines
-- `focus.lua` — keeping `b:db` on the node under the cursor
-- `items.lua` — node ids, and the connections
-- `objects.lua` — turning a fetched catalog into nodes
-- `roles.lua` — the Roles folder and each role
-- `grants.lua` — the Grants folders, under an object and under a role
-- `connections.lua` — reading the connection list
-- `client.lua` — running a client, decoding json
-- `cache.lua` — what has already been asked
-- `ddl/` — the create, drop and change statements
-- `popup.lua` — the window a statement or a description is shown in
-- `scratch.lua` — the default `open_scratch`
-- `quote.lua` — putting a name into sql safely
-- `url.lua` — reading a url, and naming a sibling database
-- `schemes/` — one module per database
+| File              | Holds                                                     |
+|-------------------|-----------------------------------------------------------|
+| `init.lua`        | the source: what expands and what fetches                 |
+| `config.lua`      | the default config: renderers and keys                    |
+| `commands.lua`    | what the keys do                                          |
+| `components.lua`  | the icon and the detail text on each line                 |
+| `privileges.lua`  | the privilege columns on a grant row                      |
+| `highlights.lua`  | the highlight groups this source defines                  |
+| `focus.lua`       | keeping `b:db` on the node under the cursor               |
+| `items.lua`       | node ids, and the connections                             |
+| `objects.lua`     | turning a fetched catalog into nodes                      |
+| `roles.lua`       | the Roles folder and each role                            |
+| `grants.lua`      | the Grants folders, under an object and under a role      |
+| `connections.lua` | reading the connection list                               |
+| `client.lua`      | running a client, decoding json                           |
+| `cache.lua`       | what has already been asked                               |
+| `ddl/`            | the create, drop and change statements                    |
+| `popup.lua`       | the window a statement or a description is shown in       |
+| `scratch.lua`     | the default `open_scratch`                                |
+| `quote.lua`       | putting a name into sql safely                            |
+| `url.lua`         | reading a url, and naming a sibling database              |
+| `schemes/`        | one module per database                                   |

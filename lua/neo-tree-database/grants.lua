@@ -127,33 +127,36 @@ local function segments(...)
   return table.concat(parts, "/")
 end
 
---- The rows of an object's Grants folder, each named by its grantee.
+--- The rows of an object's Grants folder, each named by its grantee, such as
+--- `bob`, or `bob (email)` for a grant on one column.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
 function M.grantees(node)
   local result = {}
   for _, row in ipairs(node.extra.record) do
     local grantee = row.grant.grantee
+    local column = row.target.column
     local id = node.id .. "/" .. (grantee and items.segment(grantee) or "@public")
-    if row.target.column then
-      id = id .. "/" .. items.segment(row.target.column)
+    local name = grantee or "PUBLIC"
+    if column then
+      id = id .. "/" .. items.segment(column)
+      name = name .. " (" .. column .. ")"
     end
-    table.insert(
-      result,
-      items.leaf(id, grantee or "PUBLIC", "grant", items.inherit(node.extra, { kind = "grant", record = row }))
-    )
+    table.insert(result, items.leaf(id, name, "grant", items.inherit(node.extra, { kind = "grant", record = row })))
   end
   return result
 end
 
---- How a row on the role side is named: by the object it grants on.
+--- How a row on the role side is named: by the object it grants on, such as
+--- `public.orders`, or `public.orders.email` for a grant on one column.
 ---@param target dbtree.GrantTarget
 ---@return string
 local function object_name(target)
   if not target.schema then
     return target.name
   end
-  return target.schema .. "." .. items.signature(target.name, target.arguments)
+  local name = target.schema .. "." .. items.signature(target.name, target.arguments)
+  return target.column and (name .. "." .. target.column) or name
 end
 
 --- Every grant `document` holds, on any object in it.

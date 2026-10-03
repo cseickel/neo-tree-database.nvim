@@ -21,6 +21,24 @@ local function leaf()
   return { { "indent" }, { "icon" }, { "name" }, { "detail" } }
 end
 
+--- The privilege columns a grant row shows. No kind of object can have two of
+--- the privileges one column lists, so each cell holds a single word.
+local PRIVILEGE_COLUMNS = {
+  { "SELECT", "CREATE", "EXECUTE" },
+  { "INSERT", "USAGE", "CONNECT" },
+  { "UPDATE", "TEMPORARY" },
+  { "DELETE" },
+  { "TRUNCATE" },
+}
+
+local function grant_line()
+  local content = { { "name", zindex = 10 } }
+  for _, grants in ipairs(PRIVILEGE_COLUMNS) do
+    table.insert(content, { "privilege", grants = grants, zindex = 10, align = "right" })
+  end
+  return { { "indent" }, { "icon" }, { "container", content = content } }
+end
+
 --- Keys neo-tree binds for every source that mean nothing here. A database node
 --- has no path, so the commands behind these keys either do nothing or reach
 --- for a field that is not there. They are turned off rather than left to
@@ -84,19 +102,7 @@ return {
     column = leaf(),
     index = leaf(),
     constraint = leaf(),
-    -- The privileges are dropped when the window is too narrow for them, and
-    -- `i` shows them as the GRANT.
-    grant = {
-      { "indent" },
-      { "icon" },
-      {
-        "container",
-        content = {
-          { "name", zindex = 10 },
-          { "detail", zindex = 10, required_width = 64 },
-        },
-      },
-    },
+    grant = grant_line(),
     loading = { { "indent" }, { "name" } },
     message = { { "indent", with_markers = false }, { "name" } },
   },

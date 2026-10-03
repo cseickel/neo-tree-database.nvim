@@ -1,10 +1,10 @@
 --[[
 What each line of the tree shows.
 
-Two components carry this source. `icon` says what kind of thing a node is, and
-`detail` says the one fact about it worth reading without opening it: how many
-tables a schema holds, roughly how many rows a table holds, what type a column
-is, what an index covers.
+`icon` says what kind of thing a node is, and `detail` says the one fact about
+it worth reading without opening it: how many tables a schema holds, roughly
+how many rows a table holds, what type a column is, what an index covers.
+`privilege` is one column of a grant row's privileges.
 
 The common components are merged in below, so `indent`, `container` and the
 rest stay available to a renderer.
@@ -12,7 +12,7 @@ rest stay available to a renderer.
 
 local common = require("neo-tree.sources.common.components")
 local highlights = require("neo-tree.ui.highlights")
-local database_highlights = require("neo-tree-database.highlights")
+local privileges = require("neo-tree-database.privileges")
 local url = require("neo-tree-database.url")
 
 local M = {}
@@ -186,27 +186,6 @@ DETAIL.role = function(node)
   return table.concat(node.extra.record.attributes, ", "):lower()
 end
 
---- The privileges of a grant, such as `SELECT, UPDATE with grant option` or,
---- on one column, `SELECT (email)`.
-DETAIL.grant = function(node)
-  local row = node.extra.record
-  local privileges = {}
-  for _, privilege in ipairs(row.grant.privileges) do
-    table.insert(privileges, privilege.name .. (privilege.grantable and " with grant option" or ""))
-  end
-  local text = table.concat(privileges, ", ")
-  if row.target.column then
-    text = text .. " (" .. row.target.column .. ")"
-  end
-  return text
-end
-
---- Privileges are sql keywords, and are coloured like one rather than dimmed
---- like the other details.
-local DETAIL_HIGHLIGHT = {
-  grant = database_highlights.PRIVILEGE,
-}
-
 ---@param config table
 ---@param node NuiTree.Node
 ---@return neotree.Render.Node
@@ -223,8 +202,10 @@ M.detail = function(config, node, _)
 
   return {
     text = " " .. text,
-    highlight = DETAIL_HIGHLIGHT[node.type] or config.highlight or highlights.DIM_TEXT,
+    highlight = config.highlight or highlights.DIM_TEXT,
   }
 end
+
+M.privilege = privileges.cell
 
 return vim.tbl_deep_extend("force", common, M)
