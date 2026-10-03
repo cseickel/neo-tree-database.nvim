@@ -15,6 +15,7 @@ local renderer = require("neo-tree.ui.renderer")
 
 local ddl = require("neo-tree-database.ddl")
 local focus = require("neo-tree-database.focus")
+local items = require("neo-tree-database.items")
 local popup = require("neo-tree-database.popup")
 local quote = require("neo-tree-database.quote")
 local scratch = require("neo-tree-database.scratch")
@@ -22,11 +23,6 @@ local schemes = require("neo-tree-database.schemes")
 local source = require("neo-tree-database")
 
 local M = {}
-
---- The node types that answer by asking the database. Refreshing anything below
---- one of these would rebuild it from the same held document and show the same
---- thing again, so a refresh walks up to here first.
-local FETCHES = { connection = true, catalog = true }
 
 ---@param state neotree.StateWithTree
 ---@return NuiTree.Node|nil
@@ -93,10 +89,14 @@ M.refresh = function(state)
 end
 
 ---Asks the database again for whatever holds the node under the cursor.
+---
+---Only a node with `documents` asks the database. Refreshing anything below
+---one would rebuild it from the same held documents and show the same thing
+---again, so a refresh walks up to one first.
 ---@param state neotree.StateWithTree
 M.refresh_node = function(state)
   local node = state.tree:get_node()
-  while node and not FETCHES[node.type] do
+  while node and not (node.extra and node.extra.documents) do
     local parent_id = node:get_parent_id()
     node = parent_id and state.tree:get_node(parent_id) or nil
   end
@@ -107,45 +107,61 @@ M.refresh_node = function(state)
   source.refresh_node(state, node)
 end
 
-local UNQUALIFIED = { column = true, index = true, constraint = true }
+---@param extra table
+---@return string
+local function own_name(extra)
+  return extra.record.name
+end
 
---- The node types that name something in the database. The root, a heading, a
---- placeholder and an error message name nothing, and copying their label would
---- put the word `Databases` or the text of an error in the clipboard.
-local NAMED = {
-  catalog = true,
-  schema = true,
-  table = true,
-  view = true,
-  materialized_view = true,
-  column = true,
-  index = true,
-  constraint = true,
+---@param extra table
+---@param quoting dbtree.Quoting
+---@return string
+local function relation_name(extra, quoting)
+  return quote.qualified(extra.schema, extra.relation, quoting)
+end
+
+--- What each node type is called in sql. A column, an index and a constraint
+--- are named on their own, because that is the form they are typed in.
+--- Everything a schema holds is qualified by it, and a function also carries
+--- its argument types, which tell it apart from its overloads.
+---
+--- The root, a heading, a placeholder, an error message and a grant name
+--- nothing, and copying their label would put the word `Databases` or the text
+--- of an error in the clipboard.
+---@type table<string, fun(extra: table, quoting: dbtree.Quoting): string>
+local SQL_NAMES = {
+  catalog = function(extra, quoting)
+    return quote.identifier(extra.catalog, quoting)
+  end,
+  schema = function(extra, quoting)
+    return quote.identifier(extra.schema, quoting)
+  end,
+  table = relation_name,
+  view = relation_name,
+  materialized_view = relation_name,
+  column = own_name,
+  index = own_name,
+  constraint = own_name,
+  sequence = function(extra, quoting)
+    return quote.qualified(extra.schema, extra.record.name, quoting)
+  end,
+  routine = function(extra, quoting)
+    return items.signature(quote.qualified(extra.schema, extra.record.name, quoting), extra.record.arguments)
+  end,
+  role = function(extra, quoting)
+    return quote.identifier(extra.record.name, quoting)
+  end,
 }
 
---- What the node under the cursor is called in sql. A column, an index and a
---- constraint are named on their own, because that is the form they are typed
---- in. Everything larger is qualified by what holds it.
+--- What the node under the cursor is called in sql.
 ---@param node NuiTree.Node
 ---@return string|nil
 local function sql_name(node)
-  if not NAMED[node.type] then
+  local name = SQL_NAMES[node.type]
+  if not name then
     return nil
   end
-
-  local extra = node.extra
-  local quoting = quoting_for(node)
-
-  if UNQUALIFIED[node.type] then
-    return extra.record.name
-  end
-  if extra.relation then
-    return quote.qualified(extra.schema, extra.relation, quoting)
-  end
-  if extra.schema then
-    return quote.identifier(extra.schema, quoting)
-  end
-  return quote.identifier(extra.catalog, quoting)
+  return name(node.extra, quoting_for(node))
 end
 
 ---@param state neotree.StateWithTree

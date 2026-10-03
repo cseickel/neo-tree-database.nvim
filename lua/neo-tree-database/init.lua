@@ -1,10 +1,11 @@
 --[[
 The database source.
 
-Connections come from a file, a catalog list comes from one query per
-connection, and everything below a catalog comes from one query per catalog. So
-the two nodes that reach the network are the connection and the catalog, and
-every level under them is built from a document already held.
+Connections come from a file, a catalog list and the roles come from one query
+per connection, and everything below a catalog comes from one query per catalog.
+A node that needs one of those answers names it in its `documents`, and opening
+it asks for whichever of them is not held yet. Every other node is built from a
+document already held.
 
 Expanding is owned here rather than by neo-tree's shared `open`, because that
 one hands a node to its source only when the node's type is `directory`, and
@@ -14,7 +15,10 @@ these nodes carry what they are as their type instead.
 local cache = require("neo-tree-database.cache")
 local client = require("neo-tree-database.client")
 local connections = require("neo-tree-database.connections")
+local grants = require("neo-tree-database.grants")
 local items = require("neo-tree-database.items")
+local objects = require("neo-tree-database.objects")
+local roles = require("neo-tree-database.roles")
 local schemes = require("neo-tree-database.schemes")
 
 local log = require("neo-tree.log")
@@ -74,14 +78,95 @@ local function show_failure(state, node, message)
   end
 end
 
---- Runs `request` and hands the document to `on_document` along with the node
---- as it stands when the answer arrives, which is not the node that asked if
+--- Each folder's children, by the `folder` its extra names.
+---@type table<string, fun(node: dbtree.Item|NuiTree.Node): dbtree.Item[]>
+local FOLDERS = {
+  tables = objects.relations,
+  views = objects.relations,
+  materialized_views = objects.relations,
+  sequences = objects.sequences,
+  functions = objects.routines,
+  columns = objects.relation_parts,
+  indexes = objects.relation_parts,
+  constraints = objects.relation_parts,
+  grants = grants.grantees,
+  roles = roles.listed,
+  member_of = roles.named,
+  members = roles.named,
+  role_grants = function(node)
+    return roles.catalogs(node, cache.get)
+  end,
+}
+
+--- The answer a node with a single document is built from. It is held,
+--- because such a node is built only once its document has been read.
+---@param node dbtree.Item|NuiTree.Node
+---@return table
+local function document_of(node)
+  return assert(cache.get(node.extra.documents[1].id), "built before its document was read")
+end
+
+--- What each container holds, built from answers already fetched.
+---@type table<string, fun(node: dbtree.Item|NuiTree.Node): dbtree.Item[]>
+local HELD = {
+  connection = function(node)
+    local scheme = assert(schemes.of(node.extra.url), "a connection was read with no scheme to read it")
+    local server = document_of(node)
+    local children = objects.catalogs(node, server.catalogs, scheme.catalog_url)
+    return vim.list_extend(children, roles.folder(node, server, scheme.catalog_url))
+  end,
+  catalog = function(node)
+    return objects.schemas(node, document_of(node))
+  end,
+  grant_catalog = function(node)
+    return grants.held(node, document_of(node))
+  end,
+  schema = objects.schema_folders,
+  table = objects.relation_folders,
+  view = objects.relation_folders,
+  materialized_view = objects.relation_folders,
+  sequence = objects.grant_folder,
+  routine = objects.grant_folder,
+  role = roles.parts,
+  public = roles.parts,
+  folder = function(node)
+    return FOLDERS[node.extra.folder](node)
+  end,
+}
+
+--- The documents `node` names that are not held yet.
+---@param node NuiTree.Node
+---@return dbtree.Document[]
+local function unread(node)
+  local result = {}
+  for _, document in ipairs(node.extra.documents or {}) do
+    if not cache.get(document.id) then
+      table.insert(result, document)
+    end
+  end
+  return result
+end
+
+--- Reads `documents` all at once, keeps each answer, and fills the node as it
+--- stands when the last answer arrives, which is not the node that asked if
 --- the tree was rebuilt in the meantime.
+---
+--- The node fails only when it holds none of its documents afterwards. When it
+--- holds some, it is built from those, and decides itself what an unread
+--- document means.
 ---@param state neotree.State
 ---@param node NuiTree.Node
----@param request dbtree.Request
----@param on_document fun(document: table, node: NuiTree.Node)
-local function fetch(state, node, request, on_document)
+---@param documents dbtree.Document[]
+local function fetch(state, node, documents)
+  local scheme = schemes.of(node.extra.url)
+  if not scheme then
+    return show_failure(
+      state,
+      node,
+      ("cannot browse %s, only %s"):format(node.extra.url, table.concat(schemes.supported(), ", "))
+    )
+  end
+
   local id = node:get_id()
   if inflight[id] then
     return
@@ -96,101 +181,47 @@ local function fetch(state, node, request, on_document)
     renderer.redraw(state)
   end
 
-  client.run(request, function(document, err)
-    inflight[id] = nil
+  local waiting = #documents
+  local errors = {}
+  for _, document in ipairs(documents) do
+    -- A catalog's document is read through the url that reaches the catalog,
+    -- which for postgres is not the url the connection was written with.
+    local request = document.catalog and scheme.introspect(document.url, document.catalog)
+      or scheme.catalogs(document.url)
+    client.run(request, function(answer, err)
+      if err then
+        table.insert(errors, err)
+      else
+        cache.put(document.id, answer)
+      end
+      waiting = waiting - 1
+      if waiting > 0 then
+        return
+      end
 
-    local live = state.tree and state.tree:get_node(id)
-    if not live then
-      return
-    end
-    if err then
-      return show_failure(state, live, err)
-    end
-    on_document(document, live)
-  end)
-end
-
---- What each container holds, built from answers already fetched, or nil when
---- its database has not been asked. Everything below a catalog is built from
---- the document the catalog answered, so only a connection and a catalog can
---- answer nil.
----@type table<string, fun(node: dbtree.Item|NuiTree.Node): dbtree.Item[]|nil>
-local HELD = {
-  connection = function(node)
-    local scheme = schemes.of(node.extra.url)
-    local names = cache.get(node.id)
-    if scheme and names then
-      return items.catalogs(node, names, scheme.catalog_url)
-    end
-    return nil
-  end,
-  catalog = function(node)
-    local document = cache.get(node.id)
-    if document then
-      return items.schemas(node, document)
-    end
-    return nil
-  end,
-  schema = items.schema_groups,
-  folder = function(node)
-    -- A folder holding part of a relation says which node type its leaves take.
-    -- A folder holding relations does not, because each relation says its own.
-    if node.extra.leaf then
-      return items.relation_parts(node)
-    end
-    return items.relations(node)
-  end,
-  table = items.relation_groups,
-}
-HELD.view = HELD.table
-HELD.materialized_view = HELD.table
-
----@param state neotree.State
----@param node NuiTree.Node
-local function fetch_catalogs(state, node)
-  local scheme = schemes.of(node.extra.url)
-  if not scheme then
-    return show_failure(
-      state,
-      node,
-      ("cannot browse %s, only %s"):format(node.extra.url, table.concat(schemes.supported(), ", "))
-    )
+      inflight[id] = nil
+      local live = state.tree and state.tree:get_node(id)
+      if not live then
+        return
+      end
+      if #unread(live) == #live.extra.documents then
+        if #errors == 0 then
+          -- A refresh elsewhere dropped everything it read while it waited.
+          return M.expand(state, live)
+        end
+        return show_failure(state, live, errors[1])
+      end
+      show(state, live, HELD[live.type](live))
+    end)
   end
-
-  fetch(state, node, scheme.catalogs(node.extra.url), function(document, live)
-    local names = document.catalogs or {}
-    cache.put(live:get_id(), names)
-    show(state, live, items.catalogs(live, names, scheme.catalog_url))
-  end)
 end
 
----@param state neotree.State
----@param node NuiTree.Node
-local function fetch_catalog(state, node)
-  local scheme = schemes.of(node.extra.url)
-  if not scheme then
-    return show_failure(state, node, "cannot browse " .. node.extra.url)
-  end
-
-  -- A catalog node already carries the url that reaches it, which for postgres
-  -- is not the url the connection was written with.
-  fetch(state, node, scheme.introspect(node.extra.url, node.extra.catalog), function(document, live)
-    cache.put(live:get_id(), document)
-    show(state, live, items.schemas(live, document))
-  end)
-end
-
----@type table<string, fun(state: neotree.State, node: NuiTree.Node)>
-local FETCHERS = {
-  connection = fetch_catalogs,
-  catalog = fetch_catalog,
-}
-
---- Whether `node` holds anything to open onto.
+--- Whether `node` opens onto anything. A sequence or a function is a leaf
+--- where it has no grants to show, so the type alone does not answer this.
 ---@param node NuiTree.Node
 ---@return boolean
 function M.is_container(node)
-  return HELD[node.type] ~= nil
+  return HELD[node.type] ~= nil and node:has_children()
 end
 
 --- Fills `node` with its children, from what is already held when it can and
@@ -198,20 +229,21 @@ end
 ---@param state neotree.State
 ---@param node NuiTree.Node
 function M.expand(state, node)
-  local held = HELD[node.type]
-  if not held then
+  local build = HELD[node.type]
+  if not build then
     return
   end
 
-  local children = held(node)
-  if children then
-    return show(state, node, children)
+  local documents = unread(node)
+  if #documents > 0 then
+    return fetch(state, node, documents)
   end
-  FETCHERS[node.type](state, node)
+  show(state, node, build(node))
 end
 
---- Forgets what `node` answered and asks again. Everything under it is dropped
---- too, so a schema that has been renamed does not keep its old tables.
+--- Forgets the documents `node` was built from and asks again. Everything
+--- cached under them is dropped too, so a schema that has been renamed does not
+--- keep its old tables.
 ---
 --- A node already waiting on an answer is left alone. Dropping the cache under
 --- it would not stop the running query, which would then fill the node with the
@@ -219,12 +251,13 @@ end
 ---@param state neotree.State
 ---@param node NuiTree.Node
 function M.refresh_node(state, node)
-  local id = node:get_id()
-  if inflight[id] then
+  if inflight[node:get_id()] then
     return vim.notify("neo-tree database: " .. node.name .. " is already loading")
   end
 
-  cache.drop(id)
+  for _, document in ipairs(node.extra.documents) do
+    cache.drop(document.id)
+  end
   node.loaded = false
   M.expand(state, node)
 end
@@ -297,91 +330,14 @@ M.navigate = function(state, path, path_to_reveal, callback)
   end
 end
 
----@class (exact) neotree.Config.Database : neotree.Config.Source
----@field connections dbtree.Connection[]|fun(): dbtree.Connection[]|nil
----@field open_scratch fun(spec: dbtree.Scratch)|nil
-
---- Every node type this source emits needs its own renderer, because a type
---- with none renders as `type: name` with the type spelled out.
-local function line(...)
-  local components = { { "indent", with_expanders = true }, { "icon" }, { "name" } }
-  for _, extra in ipairs({ ... }) do
-    table.insert(components, extra)
-  end
-  return components
-end
-
---- Keys neo-tree binds for every source that mean nothing here. A database node
---- has no path, so the commands behind these keys either do nothing or reach
---- for a field that is not there. They are turned off rather than left to
---- resolve to a warning and a key that silently does nothing.
-local DISABLED = {
-  "a",
-  "A",
-  "T",
-  "u",
-  "U",
-  "r",
-  "x",
-  "p",
-  "m",
-  "S",
-  "t",
-  "w",
-  "P",
-  "<C-r>",
-  "<C-f>",
-  "<C-b>",
-  "<C-s>",
-  "<Tab>",
-  "<C-S-i>",
-  "<C-;>",
-}
-
-local mappings = {
-  ["<cr>"] = "open",
-  ["<space>"] = "toggle_node",
-  ["l"] = "open",
-  ["R"] = "refresh_node",
-  ["y"] = "yank_name",
-  ["K"] = "describe",
-  ["i"] = "object_info",
-  ["d"] = "object_drop",
-  ["c"] = "object_change",
-  ["s"] = "open_scratch",
-}
-for _, key in ipairs(DISABLED) do
-  mappings[key] = "noop"
-end
-
-M.default_config = {
-  connections = nil,
-  open_scratch = nil,
-  renderers = {
-    root = { { "indent" }, { "icon" }, { "name" } },
-    connection = line({ "detail" }),
-    catalog = line(),
-    schema = line({ "detail" }),
-    folder = line(),
-    table = line({ "detail" }),
-    view = line({ "detail" }),
-    materialized_view = line({ "detail" }),
-    column = { { "indent" }, { "icon" }, { "name" }, { "detail" } },
-    index = { { "indent" }, { "icon" }, { "name" }, { "detail" } },
-    constraint = { { "indent" }, { "icon" }, { "name" }, { "detail" } },
-    loading = { { "indent" }, { "name" } },
-    message = { { "indent", with_markers = false }, { "name" } },
-  },
-  window = {
-    mappings = mappings,
-  },
-}
+M.default_config = require("neo-tree-database.config")
 
 ---@param config neotree.Config.Database
 ---@param global_config neotree.Config.Base
 M.setup = function(config, global_config)
   M.config = config
   require("neo-tree-database.focus").track(M.name)
+  require("neo-tree-database.highlights").setup()
 end
 
 return M

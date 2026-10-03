@@ -12,25 +12,34 @@ rest stay available to a renderer.
 
 local common = require("neo-tree.sources.common.components")
 local highlights = require("neo-tree.ui.highlights")
+local database_highlights = require("neo-tree-database.highlights")
 local url = require("neo-tree-database.url")
 
 local M = {}
 
+--- Nerd font glyphs, written as escapes because they sit in the private use
+--- area and a tool that drops what it cannot display would leave them empty.
 local ICONS = {
-  root = "",
-  connection = "󰆼",
-  catalog = "",
-  schema = "",
-  folder_closed = "",
-  folder_open = "",
-  table = "",
-  view = "",
-  materialized_view = "",
-  column = "",
-  index = "",
-  constraint = "",
-  loading = "",
-  message = "",
+  root = "\u{f1c0}",
+  connection = "\u{f01bc}",
+  catalog = "\u{e706}",
+  schema = "\u{ea8b}",
+  folder_closed = "\u{e5ff}",
+  folder_open = "\u{e5fe}",
+  table = "\u{f0ce}",
+  view = "\u{f06e}",
+  materialized_view = "\u{ea70}",
+  column = "\u{eb5f}",
+  index = "\u{f160}",
+  constraint = "\u{f023}",
+  sequence = "\u{f162}",
+  routine = "\u{f0295}",
+  role = "\u{f007}",
+  public = "\u{f0c0}",
+  grant = "\u{f084}",
+  grant_catalog = "\u{e706}",
+  loading = "\u{f110}",
+  message = "\u{f05a}",
 }
 
 --- The groups a node type is coloured with when this source has an opinion.
@@ -45,6 +54,7 @@ local ICON_HIGHLIGHT = {
   catalog = highlights.DIRECTORY_ICON,
   schema = highlights.DIRECTORY_ICON,
   folder = highlights.DIRECTORY_ICON,
+  grant_catalog = highlights.DIRECTORY_ICON,
   loading = highlights.DIM_TEXT,
   message = highlights.MESSAGE,
 }
@@ -55,6 +65,7 @@ local NAME_HIGHLIGHT = {
   catalog = highlights.DIRECTORY_NAME,
   schema = highlights.DIRECTORY_NAME,
   folder = highlights.DIRECTORY_NAME,
+  grant_catalog = highlights.DIRECTORY_NAME,
   loading = highlights.DIM_TEXT,
   message = highlights.MESSAGE,
 }
@@ -116,11 +127,15 @@ DETAIL.connection = function(node)
 end
 
 DETAIL.schema = function(node)
-  local relations = node.extra.record.relations or {}
-  if #relations == 0 then
+  local schema = node.extra.record
+  local relations = #(schema.relations or {})
+  if relations > 0 then
+    return relations == 1 and "1 relation" or (relations .. " relations")
+  end
+  if #(schema.sequences or {}) + #(schema.functions or {}) == 0 then
     return "empty"
   end
-  return #relations == 1 and "1 relation" or (#relations .. " relations")
+  return nil
 end
 
 local function relation_detail(node)
@@ -158,6 +173,40 @@ DETAIL.constraint = function(node)
   return node.extra.record.type
 end
 
+--- A plain function says nothing, and any other kind says what it is.
+DETAIL.routine = function(node)
+  local kind = node.extra.record.kind
+  if kind == "function" then
+    return nil
+  end
+  return (kind:gsub("_", " "))
+end
+
+DETAIL.role = function(node)
+  return table.concat(node.extra.record.attributes, ", "):lower()
+end
+
+--- The privileges of a grant, such as `SELECT, UPDATE with grant option` or,
+--- on one column, `SELECT (email)`.
+DETAIL.grant = function(node)
+  local row = node.extra.record
+  local privileges = {}
+  for _, privilege in ipairs(row.grant.privileges) do
+    table.insert(privileges, privilege.name .. (privilege.grantable and " with grant option" or ""))
+  end
+  local text = table.concat(privileges, ", ")
+  if row.target.column then
+    text = text .. " (" .. row.target.column .. ")"
+  end
+  return text
+end
+
+--- Privileges are sql keywords, and are coloured like one rather than dimmed
+--- like the other details.
+local DETAIL_HIGHLIGHT = {
+  grant = database_highlights.PRIVILEGE,
+}
+
 ---@param config table
 ---@param node NuiTree.Node
 ---@return neotree.Render.Node
@@ -172,7 +221,10 @@ M.detail = function(config, node, _)
     return {}
   end
 
-  return { text = " " .. text, highlight = config.highlight or highlights.DIM_TEXT }
+  return {
+    text = " " .. text,
+    highlight = DETAIL_HIGHLIGHT[node.type] or config.highlight or highlights.DIM_TEXT,
+  }
 end
 
 return vim.tbl_deep_extend("force", common, M)

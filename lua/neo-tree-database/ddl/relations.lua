@@ -1,25 +1,13 @@
 --[[
-The statement for an object.
-
-Three questions get asked of whatever the cursor is on: what made it, what
-would drop it, and what would change it. All three are answered as sql text and
-none of them is run, so `d` on a table produces a DROP statement to read rather
-than a dropped table.
-
-A change is a skeleton to edit rather than a finished statement, because what
-an ALTER should say is the thing the user is about to decide.
+The statements for a schema, a relation, and the parts of a relation.
 ]]
 
 local quote = require("neo-tree-database.quote")
-local schemes = require("neo-tree-database.schemes")
 
-local M = {}
+---@type dbtree.Statements
+local M = { info = {}, drop = {}, change = {} }
 
----@class dbtree.Statement
----@field title string
----@field lines string[]
-
-local DROP_KEYWORD = {
+local KEYWORD = {
   table = "TABLE",
   view = "VIEW",
   materialized_view = "MATERIALIZED VIEW",
@@ -33,28 +21,14 @@ local function relation_name(node, quoting)
   return quote.qualified(node.extra.schema, node.extra.relation, quoting)
 end
 
----@param node NuiTree.Node
----@return dbtree.Scheme|nil scheme
----@return string|nil err
-local function scheme_of(node)
-  local scheme = schemes.of(node.extra.url)
-  if not scheme then
-    return nil, "no statement can be written for " .. node.extra.url
-  end
-  return scheme, nil
-end
-
----@type table<string, fun(node: NuiTree.Node, scheme: dbtree.Scheme): dbtree.Statement>
-local INFO = {}
-
-INFO.schema = function(node, scheme)
+M.info.schema = function(node, scheme)
   return {
     title = "Schema " .. node.extra.schema,
     lines = { "CREATE SCHEMA " .. quote.identifier(node.extra.schema, scheme.quoting) .. ";" },
   }
 end
 
-INFO.column = function(node, scheme)
+M.info.column = function(node, scheme)
   local column = node.extra.record
   return {
     title = node.extra.relation .. "." .. column.name,
@@ -68,7 +42,7 @@ INFO.column = function(node, scheme)
   }
 end
 
-INFO.index = function(node, scheme)
+M.info.index = function(node)
   local index = node.extra.record
   local definition = index.definition
   if not definition then
@@ -77,7 +51,7 @@ INFO.index = function(node, scheme)
   return { title = index.name, lines = vim.split(definition, "\n", { plain = true }) }
 end
 
-INFO.constraint = function(node, scheme)
+M.info.constraint = function(node, scheme)
   local constraint = node.extra.record
   if not constraint.definition then
     return { title = constraint.name, lines = { "-- " .. constraint.name .. " has no definition" } }
@@ -103,21 +77,18 @@ local function relation_info(node, scheme)
   }
 end
 
-INFO.table = relation_info
-INFO.view = relation_info
-INFO.materialized_view = relation_info
+M.info.table = relation_info
+M.info.view = relation_info
+M.info.materialized_view = relation_info
 
----@type table<string, fun(node: NuiTree.Node, scheme: dbtree.Scheme): dbtree.Statement>
-local DROP = {}
-
-DROP.schema = function(node, scheme)
+M.drop.schema = function(node, scheme)
   return {
     title = "Drop schema " .. node.extra.schema,
     lines = { "DROP SCHEMA " .. quote.identifier(node.extra.schema, scheme.quoting) .. ";" },
   }
 end
 
-DROP.column = function(node, scheme)
+M.drop.column = function(node, scheme)
   return {
     title = "Drop " .. node.extra.relation .. "." .. node.extra.record.name,
     lines = {
@@ -130,7 +101,7 @@ DROP.column = function(node, scheme)
   }
 end
 
-DROP.index = function(node, scheme)
+M.drop.index = function(node, scheme)
   return {
     title = "Drop " .. node.extra.record.name,
     lines = {
@@ -141,7 +112,7 @@ DROP.index = function(node, scheme)
   }
 end
 
-DROP.constraint = function(node, scheme)
+M.drop.constraint = function(node, scheme)
   return {
     title = "Drop " .. node.extra.record.name,
     lines = {
@@ -159,7 +130,7 @@ local function relation_drop(node, scheme)
     title = "Drop " .. node.extra.schema .. "." .. node.extra.relation,
     lines = {
       "DROP "
-        .. DROP_KEYWORD[node.type]
+        .. KEYWORD[node.type]
         .. " "
         .. relation_name(node, scheme.quoting)
         .. ";",
@@ -167,14 +138,11 @@ local function relation_drop(node, scheme)
   }
 end
 
-DROP.table = relation_drop
-DROP.view = relation_drop
-DROP.materialized_view = relation_drop
+M.drop.table = relation_drop
+M.drop.view = relation_drop
+M.drop.materialized_view = relation_drop
 
----@type table<string, fun(node: NuiTree.Node, scheme: dbtree.Scheme): dbtree.Statement>
-local CHANGE = {}
-
-CHANGE.schema = function(node, scheme)
+M.change.schema = function(node, scheme)
   return {
     title = "Alter schema " .. node.extra.schema,
     lines = {
@@ -187,7 +155,7 @@ CHANGE.schema = function(node, scheme)
   }
 end
 
-CHANGE.column = function(node, scheme)
+M.change.column = function(node, scheme)
   local column = node.extra.record
   local table_name = relation_name(node, scheme.quoting)
   local column_name = quote.identifier(column.name, scheme.quoting)
@@ -208,17 +176,23 @@ CHANGE.column = function(node, scheme)
   }
 end
 
-CHANGE.index = function(node, scheme)
-  local name = quote.qualified(node.extra.schema, node.extra.record.name, scheme.quoting)
+M.change.index = function(node, scheme)
+  local index = node.extra.record.name
   return {
-    title = "Alter " .. node.extra.record.name,
-    lines = { "ALTER INDEX " .. name .. " RENAME TO " .. name .. ";" },
+    title = "Alter " .. index,
+    lines = {
+      "ALTER INDEX "
+        .. quote.qualified(node.extra.schema, index, scheme.quoting)
+        .. " RENAME TO "
+        .. quote.identifier(index, scheme.quoting)
+        .. ";",
+    },
   }
 end
 
 --- A constraint is not altered in place anywhere this plugin speaks to, so the
 --- change is the pair of statements that replaces it.
-CHANGE.constraint = function(node, scheme)
+M.change.constraint = function(node, scheme)
   local constraint = node.extra.record
   local table_name = relation_name(node, scheme.quoting)
   local constraint_name = quote.identifier(constraint.name, scheme.quoting)
@@ -240,56 +214,34 @@ CHANGE.constraint = function(node, scheme)
   return { title = "Replace " .. constraint.name, lines = lines }
 end
 
+--- A new name is given without its schema, because RENAME TO keeps the
+--- relation in the schema it is in.
 local function relation_change(node, scheme)
   local name = relation_name(node, scheme.quoting)
-  local keyword = DROP_KEYWORD[node.type]
+  local keyword = KEYWORD[node.type]
   return {
     title = "Alter " .. node.extra.schema .. "." .. node.extra.relation,
     lines = {
-      "ALTER " .. keyword .. " " .. name .. " RENAME TO " .. name .. ";",
-      "ALTER " .. keyword .. " " .. name .. " SET SCHEMA " .. node.extra.schema .. ";",
+      "ALTER "
+        .. keyword
+        .. " "
+        .. name
+        .. " RENAME TO "
+        .. quote.identifier(node.extra.relation, scheme.quoting)
+        .. ";",
+      "ALTER "
+        .. keyword
+        .. " "
+        .. name
+        .. " SET SCHEMA "
+        .. quote.identifier(node.extra.schema, scheme.quoting)
+        .. ";",
     },
   }
 end
 
-CHANGE.table = relation_change
-CHANGE.view = relation_change
-CHANGE.materialized_view = relation_change
-
----@param table_of table<string, fun(node: NuiTree.Node, scheme: dbtree.Scheme): dbtree.Statement>
----@param node NuiTree.Node
----@return dbtree.Statement|nil statement
----@return string|nil err
-local function statement(table_of, node)
-  local build = table_of[node.type]
-  if not build then
-    return nil, "nothing to write for " .. node.type
-  end
-
-  local scheme, err = scheme_of(node)
-  if not scheme then
-    return nil, err
-  end
-
-  return build(node, scheme), nil
-end
-
----@param node NuiTree.Node
----@return dbtree.Statement|nil, string|nil
-function M.info(node)
-  return statement(INFO, node)
-end
-
----@param node NuiTree.Node
----@return dbtree.Statement|nil, string|nil
-function M.drop(node)
-  return statement(DROP, node)
-end
-
----@param node NuiTree.Node
----@return dbtree.Statement|nil, string|nil
-function M.change(node)
-  return statement(CHANGE, node)
-end
+M.change.table = relation_change
+M.change.view = relation_change
+M.change.materialized_view = relation_change
 
 return M

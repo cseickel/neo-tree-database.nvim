@@ -59,6 +59,11 @@ end
 -- NOT NULL is a constraint of its own in duckdb, and the Columns node already
 -- says which columns are nullable, so it is dropped here rather than listed
 -- once per column under Constraints.
+--
+-- A macro with overloads is one row per overload, folded here into one
+-- function. A macro carries no definition, because duckdb_functions() drops
+-- parameter defaults and a CREATE MACRO rebuilt from it would differ from the
+-- one that was run.
 local INTROSPECT = [[
 select json_object('schemas', coalesce((
   select to_json(list(json_object(
@@ -117,6 +122,26 @@ select json_object('schemas', coalesce((
         from duckdb_views() where not internal
       ) r
       where r.database_name = s.database_name and r.schema_name = s.schema_name
+    ), '[]'::json),
+    'sequences', coalesce((
+      select to_json(list(json_object(
+        'name', q.sequence_name,
+        'definition', q.sql
+      ) order by q.sequence_name))
+      from duckdb_sequences() q
+      where q.database_name = s.database_name and q.schema_name = s.schema_name
+    ), '[]'::json),
+    'functions', coalesce((
+      select to_json(list(json_object(
+        'name', f.function_name,
+        'kind', f.function_type
+      ) order by f.function_name))
+      from (
+        select distinct database_name, schema_name, function_name, function_type
+        from duckdb_functions()
+        where not internal
+      ) f
+      where f.database_name = s.database_name and f.schema_name = s.schema_name
     ), '[]'::json)
   ) order by s.schema_name))
   from duckdb_schemas() s

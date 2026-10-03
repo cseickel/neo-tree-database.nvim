@@ -17,6 +17,7 @@ tree that cannot be trusted.
 ]]
 
 local quote = require("neo-tree-database.quote")
+local queries = require("neo-tree-database.schemes.postgres.sql")
 local url = require("neo-tree-database.url")
 
 local M = {}
@@ -46,102 +47,8 @@ end
 ---@param connection string
 ---@return dbtree.Request
 function M.catalogs(connection)
-  return invoke(
-    connection,
-    [[select json_build_object('catalogs', coalesce(
-      (select json_agg(datname order by datname)
-       from pg_database where datallowconn and not datistemplate),
-      '[]'::json))]]
-  )
+  return invoke(connection, queries.CATALOGS)
 end
-
--- Three things here are not the obvious spelling, and each is deliberate.
--- reltuples is -1 until the table has been analyzed, which is not an estimate
--- of zero. An index column is read back through pg_get_indexdef rather than
--- joined to pg_attribute, because indkey holds 0 for an expression and the
--- join would silently drop it. contype 'n' is the not-null constraint row that
--- postgres 17 began storing, which the column list already reports.
-local INTROSPECT = [[
-select json_build_object('schemas', coalesce((
-  select json_agg(json_build_object(
-    'name', n.nspname,
-    'relations', coalesce((
-      select json_agg(json_build_object(
-        'name', c.relname,
-        'kind', case c.relkind
-                  when 'v' then 'view'
-                  when 'm' then 'materialized_view'
-                  else 'table'
-                end,
-        'rows', case when c.reltuples < 0 then null else c.reltuples::bigint end,
-        'definition', case when c.relkind in ('v', 'm')
-                        then 'CREATE '
-                             || case c.relkind when 'm' then 'MATERIALIZED ' else '' end
-                             || 'VIEW ' || quote_ident(n.nspname) || '.' || quote_ident(c.relname)
-                             || ' AS ' || pg_get_viewdef(c.oid, true)
-                        else null
-                      end,
-        'columns', coalesce((
-          select json_agg(json_build_object(
-            'name', a.attname,
-            'type', format_type(a.atttypid, a.atttypmod),
-            'nullable', not a.attnotnull,
-            'default', pg_get_expr(d.adbin, d.adrelid),
-            'identity', nullif(a.attidentity, ''),
-            'generated', nullif(a.attgenerated, ''),
-            'position', a.attnum
-          ) order by a.attnum)
-          from pg_attribute a
-          left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
-          where a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
-        ), '[]'::json),
-        'indexes', coalesce((
-          select json_agg(json_build_object(
-            'name', ic.relname,
-            'unique', i.indisunique,
-            'definition', pg_get_indexdef(i.indexrelid),
-            'owned_by_constraint', exists (
-              select 1 from pg_constraint pc where pc.conindid = i.indexrelid
-            ),
-            'columns', coalesce((
-              select json_agg(pg_get_indexdef(i.indexrelid, key.n::integer, true) order by key.n)
-              from generate_series(1, i.indnkeyatts) as key(n)
-            ), '[]'::json)
-          ) order by ic.relname)
-          from pg_index i
-          join pg_class ic on ic.oid = i.indexrelid
-          where i.indrelid = c.oid
-        ), '[]'::json),
-        'constraints', coalesce((
-          select json_agg(json_build_object(
-            'name', k.conname,
-            'type', case k.contype
-                      when 'p' then 'PRIMARY KEY'
-                      when 'f' then 'FOREIGN KEY'
-                      when 'u' then 'UNIQUE'
-                      when 'c' then 'CHECK'
-                      when 'x' then 'EXCLUDE'
-                      when 't' then 'TRIGGER'
-                      else k.contype::text
-                    end,
-            'definition', pg_get_constraintdef(k.oid)
-          ) order by k.conname)
-          from pg_constraint k
-          where k.conrelid = c.oid and k.contype <> 'n'
-        ), '[]'::json)
-      ) order by c.relname)
-      from pg_class c
-      where c.relnamespace = n.oid
-        and c.relkind in ('r', 'p', 'v', 'm', 'f')
-        and not c.relispartition
-    ), '[]'::json)
-  ) order by n.nspname)
-  from pg_namespace n
-  where n.nspname not in ('pg_catalog', 'information_schema')
-    and n.nspname not like 'pg_toast%'
-    and n.nspname not like 'pg_temp%'
-), '[]'::json))
-]]
 
 --- The catalog is reached by connecting to it, so the query names no database
 --- and carries nothing from the tree into sql.
@@ -149,7 +56,7 @@ select json_build_object('schemas', coalesce((
 ---@param catalog string
 ---@return dbtree.Request
 function M.introspect(catalog_url, catalog)
-  return invoke(catalog_url, INTROSPECT)
+  return invoke(catalog_url, queries.INTROSPECT)
 end
 
 --- The name db-query's catalog knows a relation by. The catalog is the

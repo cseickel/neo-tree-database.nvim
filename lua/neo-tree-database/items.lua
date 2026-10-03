@@ -1,11 +1,10 @@
 --[[
-Turning a fetched catalog into tree items.
+The pieces every tree item is built from, and the levels above a catalog.
 
-One query hands back a whole catalog, so everything under a catalog is built
-from a document already in hand. The building is still done a level at a time,
-because a catalog holding ten thousand tables would otherwise become a hundred
-thousand nodes the moment it was opened, all of them collapsed and none of them
-looked at.
+The building is done a level at a time, because a catalog holding ten thousand
+tables would otherwise become a hundred thousand nodes the moment it was
+opened, all of them collapsed and none of them looked at. `objects.lua` builds
+what a catalog holds, and `roles.lua` and `grants.lua` build who can reach it.
 
 Every container is built with a single child saying it has not loaded yet. That
 child is what draws the expander arrow, and neo-tree replaces it wholesale when
@@ -23,46 +22,18 @@ local M = {}
 ---@field children dbtree.Item[]|nil
 ---@field _is_expanded boolean|nil
 
----@class dbtree.Column
----@field name string
----@field type string
----@field nullable boolean
----@field default string|nil
----@field position integer
----@field identity string|nil postgres `attidentity`, `a` or `d`.
----@field generated string|nil postgres `attgenerated`, `s` for stored.
-
----@class dbtree.Index
----@field name string
----@field unique boolean
----@field columns string[]
----@field definition string|nil
----@field owned_by_constraint boolean|nil
-
----@class dbtree.Constraint
----@field name string
----@field type string
----@field definition string
-
----@class dbtree.Relation
----@field name string
----@field kind "table"|"view"|"materialized_view"
----@field rows integer|nil
----@field definition string|nil
----@field columns dbtree.Column[]
----@field indexes dbtree.Index[]
----@field constraints dbtree.Constraint[]
-
----@class dbtree.Schema
----@field name string
----@field relations dbtree.Relation[]
+---@class dbtree.Document An answer a node is built from, and how to ask for it.
+---@field id string What the answer is cached under.
+---@field url string
+---@field catalog string|nil The catalog the answer describes, nil for a connection's catalog list.
 
 --- A name as one segment of a node id. The three characters that separate or
 --- introduce a segment are encoded, so a schema named `a` holding a table `b`
---- cannot produce the id of a schema named `a/b`.
+--- cannot produce the id of a schema named `a/b`, and a name can never produce
+--- a segment starting with `@`, which marks a heading or a placeholder.
 ---@param name string
 ---@return string
-local function segment(name)
+function M.segment(name)
   return (name:gsub("[%%/@]", function(char)
     return string.format("%%%02X", string.byte(char))
   end))
@@ -73,7 +44,7 @@ end
 ---@param node_type string
 ---@param extra table
 ---@return dbtree.Item
-local function container(id, name, node_type, extra)
+function M.container(id, name, node_type, extra)
   return {
     id = id,
     name = name,
@@ -96,8 +67,36 @@ end
 ---@param node_type string
 ---@param extra table
 ---@return dbtree.Item
-local function leaf(id, name, node_type, extra)
+function M.leaf(id, name, node_type, extra)
   return { id = id, name = name, type = node_type, extra = extra }
+end
+
+--- The fields a node below a connection takes from its parent, so a command on
+--- any of them can reach the database and name the object it sits in, with
+--- `fields` added on top.
+---@param parent table The parent node's `extra`.
+---@param fields table
+---@return table
+function M.inherit(parent, fields)
+  return vim.tbl_extend("force", {
+    connection = parent.connection,
+    catalog = parent.catalog,
+    url = parent.url,
+    schema = parent.schema,
+    relation = parent.relation,
+  }, fields)
+end
+
+--- `name(arguments)` for a function, which postgres tells apart from its
+--- overloads by the argument types. Just `name` where the database keeps none.
+---@param name string
+---@param arguments string|nil
+---@return string
+function M.signature(name, arguments)
+  if arguments then
+    return name .. "(" .. arguments .. ")"
+  end
+  return name
 end
 
 --- What a node shows in place of children it could not fetch. Rendering this
@@ -106,11 +105,10 @@ end
 ---@param text string
 ---@return dbtree.Item[]
 function M.message(parent_id, text)
-  return { leaf(parent_id .. "/@message", text, "message", { kind = "message" }) }
+  return { M.leaf(parent_id .. "/@message", text, "message", { kind = "message" }) }
 end
 
---- The id every other id is built from. Node ids are built here and nowhere
---- else, so the separator stays one module's business.
+--- The id every other id is built from.
 M.ROOT = "db:"
 
 --- The single node everything hangs under.
@@ -134,187 +132,44 @@ function M.root(children)
   }
 end
 
+---@param connection dbtree.Connection
+---@return string
+local function connection_id(connection)
+  return M.ROOT .. "/" .. M.segment(connection.name)
+end
+
+--- The id of the node for `catalog` on `connection`. A catalog's document is
+--- cached under this id, so it is also how a node elsewhere in the tree, such
+--- as a role's grants in that catalog, finds the same document.
+---@param connection dbtree.Connection
+---@param catalog string
+---@return string
+function M.catalog_id(connection, catalog)
+  return connection_id(connection) .. "/" .. M.segment(catalog)
+end
+
+--- The document describing `catalog` on `connection`, reached at `url`.
+---@param connection dbtree.Connection
+---@param catalog string
+---@param url string
+---@return dbtree.Document
+function M.catalog_document(connection, catalog, url)
+  return { id = M.catalog_id(connection, catalog), url = url, catalog = catalog }
+end
+
 ---@param connections dbtree.Connection[]
 ---@return dbtree.Item[]
 function M.connections(connections)
   local items = {}
   for _, connection in ipairs(connections) do
-    local id = M.ROOT .. "/" .. segment(connection.name)
+    local id = connection_id(connection)
     table.insert(
       items,
-      container(id, connection.name, "connection", {
+      M.container(id, connection.name, "connection", {
         kind = "connection",
         connection = connection,
         url = connection.url,
-      })
-    )
-  end
-  return items
-end
-
----@param node dbtree.Item|NuiTree.Node
----@param names string[]
----@param catalog_url fun(connection: string, catalog: string): string
----@return dbtree.Item[]
-function M.catalogs(node, names, catalog_url)
-  local parent = node.extra
-  local items = {}
-  for _, name in ipairs(names) do
-    local id = node.id .. "/" .. segment(name)
-    table.insert(
-      items,
-      container(id, name, "catalog", {
-        kind = "catalog",
-        connection = parent.connection,
-        catalog = name,
-        url = catalog_url(parent.url, name),
-      })
-    )
-  end
-  return items
-end
-
----@param node dbtree.Item|NuiTree.Node
----@param document { schemas: dbtree.Schema[] }
----@return dbtree.Item[]
-function M.schemas(node, document)
-  local parent = node.extra
-  local items = {}
-  for _, schema in ipairs(document.schemas or {}) do
-    local id = node.id .. "/" .. segment(schema.name)
-    table.insert(
-      items,
-      container(id, schema.name, "schema", {
-        kind = "schema",
-        connection = parent.connection,
-        catalog = parent.catalog,
-        url = parent.url,
-        schema = schema.name,
-        record = schema,
-      })
-    )
-  end
-  return items
-end
-
---- A folder appears only when it would hold something, so a table without
---- indexes offers nothing to open onto an empty list.
-local RELATION_GROUPS = {
-  { folder = "tables", label = "Tables", kind = "table" },
-  { folder = "views", label = "Views", kind = "view" },
-  { folder = "materialized_views", label = "Materialized Views", kind = "materialized_view" },
-}
-
----@param node dbtree.Item|NuiTree.Node
----@return dbtree.Item[]
-function M.schema_groups(node)
-  local parent = node.extra
-  local relations = parent.record.relations or {}
-
-  local items = {}
-  for _, group in ipairs(RELATION_GROUPS) do
-    local matching = {}
-    for _, relation in ipairs(relations) do
-      if relation.kind == group.kind then
-        table.insert(matching, relation)
-      end
-    end
-    if #matching > 0 then
-      local id = node.id .. "/@" .. group.folder
-      table.insert(
-        items,
-        container(id, group.label, "folder", {
-          kind = "folder",
-          folder = group.folder,
-          connection = parent.connection,
-          catalog = parent.catalog,
-          url = parent.url,
-          schema = parent.schema,
-          record = matching,
-        })
-      )
-    end
-  end
-  return items
-end
-
----@param node dbtree.Item|NuiTree.Node
----@return dbtree.Item[]
-function M.relations(node)
-  local parent = node.extra
-  local items = {}
-  for _, relation in ipairs(parent.record) do
-    local id = node.id .. "/" .. segment(relation.name)
-    table.insert(
-      items,
-      container(id, relation.name, relation.kind, {
-        kind = relation.kind,
-        connection = parent.connection,
-        catalog = parent.catalog,
-        url = parent.url,
-        schema = parent.schema,
-        relation = relation.name,
-        record = relation,
-      })
-    )
-  end
-  return items
-end
-
---- Each part of a relation, named by the field holding it, the label its folder
---- shows, and the node type its leaves take, which is also the key their
---- renderer is configured under.
-local RELATION_PARTS = {
-  { folder = "columns", label = "Columns", leaf = "column" },
-  { folder = "indexes", label = "Indexes", leaf = "index" },
-  { folder = "constraints", label = "Constraints", leaf = "constraint" },
-}
-
----@param node dbtree.Item|NuiTree.Node
----@return dbtree.Item[]
-function M.relation_groups(node)
-  local parent = node.extra
-  local items = {}
-  for _, part in ipairs(RELATION_PARTS) do
-    local held = parent.record[part.folder] or {}
-    if #held > 0 then
-      local id = node.id .. "/@" .. part.folder
-      table.insert(
-        items,
-        container(id, part.label, "folder", {
-          kind = "folder",
-          folder = part.folder,
-          leaf = part.leaf,
-          connection = parent.connection,
-          catalog = parent.catalog,
-          url = parent.url,
-          schema = parent.schema,
-          relation = parent.relation,
-          record = held,
-        })
-      )
-    end
-  end
-  return items
-end
-
----@param node dbtree.Item|NuiTree.Node
----@return dbtree.Item[]
-function M.relation_parts(node)
-  local parent = node.extra
-  local items = {}
-  for _, record in ipairs(parent.record) do
-    local id = node.id .. "/" .. segment(record.name)
-    table.insert(
-      items,
-      leaf(id, record.name, parent.leaf, {
-        kind = parent.leaf,
-        connection = parent.connection,
-        catalog = parent.catalog,
-        url = parent.url,
-        schema = parent.schema,
-        relation = parent.relation,
-        record = record,
+        documents = { { id = id, url = connection.url } },
       })
     )
   end

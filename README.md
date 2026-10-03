@@ -2,8 +2,9 @@
 
 ⚠️ This is a work in progress. What you see here today is **100% unreviewed AI slop**. ⚠️
  
-A neo-tree source that browses databases: connections, catalogs, schemas, tables and views, and
-each relation's columns, indexes and constraints.
+A neo-tree source that browses databases: connections, catalogs, schemas, tables and views, each
+relation's columns, indexes and constraints, sequences, functions, roles, and the grants on all of
+them.
 
 This is a replacemnt for the tree in vim-dadbod-ui. I use it along with vim-dadbod, which manages the actual db connections and executes queries.
 
@@ -41,6 +42,39 @@ A postgres connection lists every database on its server, each reached by its ow
 covers the whole server. A duckdb connection lists the catalogs its own process can see, which is
 the file the url names.
 
+## Roles and grants
+
+A postgres connection has a Roles folder beside its databases. Each role opens onto:
+
+- **Member of**: the roles it is a member of.
+- **Members**: the roles that are members of it.
+- **Grants**: one entry per database the role holds anything in, listing every object the role was
+  granted something on there. Opening Grants reads every database's catalog at once, the same
+  catalog each database node shows. A database that could not be read stays listed, and opening it
+  shows why.
+
+A role under Member of or Members opens the same way, so a chain of memberships can be followed in
+place. The roles postgres predefines (`pg_*`) are left out of the list. PUBLIC is listed after the
+roles, with only its grants.
+
+The database, each schema, table, view, sequence and function has a Grants folder listing who was
+granted what on it. A table's Grants folder also lists grants on its columns, such as
+`bob  SELECT (email)`. An object that was never granted on shows its owner holding every privilege,
+which is what postgres gives an owner by default.
+
+Only direct grants are shown. What a role can reach through another role is found by opening its
+Member of folder. Grants on objects the tree does not list are not shown, such as a partition, an
+object an extension created, or anything in `pg_catalog`.
+
+A grant's privileges show beside its name when the window is at least 64 columns wide. In a
+narrower window, `i` shows them as the GRANT.
+
+duckdb has no roles or grants.
+
+## Highlights
+
+- `NeoTreeDatabasePrivilege`
+
 ## Keys
 
 | Key                    | Does                                            |
@@ -63,7 +97,8 @@ no path for them to act on.
 
 `i`, `d` and `c` open a window with the sql command for that action but do
 not run it. From there `y` copies it, `o` opens it in a buffer with the
-connection set, and `q` closes it.
+connection set, and `q` closes it. On a grant, `i` shows the GRANT and `d` the
+REVOKE. On a role, `i` shows the CREATE ROLE with its attributes.
 
 `K` needs [db-query.nvim](https://github.com/cseickel/db-query.nvim) and shows its description of
 the object in the same window, where `y` copies it and `q` closes it. db-query reads a database's
@@ -117,15 +152,20 @@ I have no immediate plans to support other databases.
 
 ## Layout
 
-- `init.lua` — the source: what expands, what fetches, the default config
+- `init.lua` — the source: what expands and what fetches
+- `config.lua` — the default config: renderers and keys
 - `commands.lua` — what the keys do
 - `components.lua` — the icon and the detail text on each line
+- `highlights.lua` — the highlight groups this source defines
 - `focus.lua` — keeping `b:db` on the node under the cursor
-- `items.lua` — turning a fetched catalog into nodes, and every node id
+- `items.lua` — node ids, and the connections
+- `objects.lua` — turning a fetched catalog into nodes
+- `roles.lua` — the Roles folder and each role
+- `grants.lua` — the Grants folders, under an object and under a role
 - `connections.lua` — reading the connection list
 - `client.lua` — running a client, decoding json
 - `cache.lua` — what has already been asked
-- `ddl.lua` — the create, drop and change statements
+- `ddl/` — the create, drop and change statements
 - `popup.lua` — the window a statement or a description is shown in
 - `scratch.lua` — the default `open_scratch`
 - `quote.lua` — putting a name into sql safely
