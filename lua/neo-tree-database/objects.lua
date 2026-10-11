@@ -24,6 +24,8 @@ local M = {}
 ---@class dbtree.Index
 ---@field name string
 ---@field unique boolean
+---@field size integer|nil Bytes on disk.
+---@field size_estimated boolean|nil
 ---@field columns string[]
 ---@field definition string|nil
 ---@field owned_by_constraint boolean|nil
@@ -37,6 +39,8 @@ local M = {}
 ---@field name string
 ---@field kind "table"|"view"|"materialized_view"
 ---@field rows integer|nil
+---@field size integer|nil Bytes on disk, with its indexes.
+---@field size_estimated boolean|nil
 ---@field definition string|nil
 ---@field columns dbtree.Column[]
 ---@field indexes dbtree.Index[]
@@ -45,11 +49,15 @@ local M = {}
 
 ---@class dbtree.Sequence
 ---@field name string
+---@field size integer|nil Bytes on disk.
+---@field size_estimated boolean|nil
 ---@field definition string
 ---@field grants dbtree.Grant[]|nil
 
 ---@class dbtree.Schema
 ---@field name string
+---@field size integer|nil Bytes on disk of everything it holds.
+---@field size_estimated boolean|nil
 ---@field relations dbtree.Relation[]
 ---@field sequences dbtree.Sequence[]
 ---@field functions dbtree.Routine[]
@@ -60,13 +68,14 @@ local M = {}
 ---@field grants dbtree.Grant[]|nil
 
 ---@param node dbtree.Item|NuiTree.Node
----@param names string[]
+---@param catalogs dbtree.ListedCatalog[]
 ---@param catalog_url fun(connection: string, catalog: string): string
 ---@return dbtree.Item[]
-function M.catalogs(node, names, catalog_url)
+function M.catalogs(node, catalogs, catalog_url)
   local parent = node.extra
   local result = {}
-  for _, name in ipairs(names) do
+  for _, catalog in ipairs(catalogs) do
+    local name = catalog.name
     local url = catalog_url(parent.url, name)
     table.insert(
       result,
@@ -75,6 +84,7 @@ function M.catalogs(node, names, catalog_url)
         connection = parent.connection,
         catalog = name,
         url = url,
+        record = catalog,
         documents = { items.catalog_document(parent.connection, name, url) },
       })
     )

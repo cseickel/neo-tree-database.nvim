@@ -42,6 +42,51 @@ A postgres connection lists every database on its server, each reached by its ow
 covers the whole server. A duckdb connection lists the catalogs its own process can see, which is
 the file the url names.
 
+## Rows and sizes
+
+A table or materialized view shows its size on disk and its row estimate in two columns at the
+right edge of the window, size first. A database, a schema, an index and a sequence show their size
+alone, with a blank rows cell so that every size lines up. A view stores nothing and shows neither.
+
+```
+app                                    1.2 GB
+└─ public 2 relations                  1.1 GB
+   ├─ Tables
+   │  ├─ orders                        840 MB ~1.2M rows
+   │  │  └─ Indexes
+   │  │     └─ orders_pkey unique (id)  26 MB
+   │  └─ customers                      12 MB  ~48K rows
+   └─ Sequences
+      └─ order_ids                     8.0 KB
+```
+
+The row estimate is the database's own, so it is marked `~` and can be far from the true count. A
+table of one row reads `~1 row`. Rows are written in K, M, B and T, and sizes in B, KB, MB, GB and
+TB, where a KB is 1024 bytes. Both carry one decimal below 10.
+
+In postgres a table's size includes its indexes and toast, a partitioned table's size is the sum
+of its partitions, and a schema's size is everything its tables, materialized views and sequences
+store. A database's size comes from `pg_database_size`, which is blank for a database the
+connecting role cannot connect to. The row estimate is blank until the table has been vacuumed or
+analyzed.
+
+Measuring a size in postgres takes a lock on the relation, so a table under an exclusive lock,
+such as one being rewritten by `VACUUM FULL`, would hold up the whole catalog. The catalog query
+runs with a `lock_timeout` of 5 seconds. When that runs out, the catalog is read again with sizes
+estimated from the page counts in `pg_class`, which takes no locks. An estimated size is marked
+`~`, as in `~840 MB`. Those page counts are only as fresh as the last vacuum or analyze, so a table
+never vacuumed reads `~0 B`. The estimates stay until the node is refreshed with `R`, which tries
+the exact sizes again.
+
+duckdb reports a row estimate for each table and the size of the database file, and no size for
+a schema, table, index or sequence. A database held in memory has no file and shows no size.
+
+The columns are the `size` and `rows` components. `rows` is dropped from every line when the
+window is narrower than 50 columns, and `size` when it is narrower than 40. Each cell is coloured
+by its unit, so the big ones stand out: a size in B or KB is dimmed by half, one in MB is dimmed a
+little, and one in GB or TB is bold. A row estimate under 1M is dimmed by half, one in M is dimmed
+a little, and one in B or T is bold. The groups are listed under Highlights.
+
 ## Functions
 
 A schema lists its functions in a folder per kind: Functions, Procedures and Aggregates in
@@ -163,18 +208,33 @@ Each column is as wide as its longest privilege. No kind of object can have two 
 one default column lists. When a column of your own does match more than one, it shows all of
 them and shortens them further until they fit, as in `SE US` in a column of full words.
 
-A privilege held with grant option is drawn in `NeoTreeDatabasePrivilegeGrantable`. By default
-that group is a copy of `NeoTreeDatabasePrivilege` with an underline, made again after every
-colorscheme loads. Set `grant_option = "asterisk"` on a column to mark it with a `*`
-after the privilege instead, the way psql does.
+A privilege held with grant option is drawn in `NeoTreeDatabasePrivilegeGrantable`, which is
+underlined by default. Set `grant_option = "asterisk"` on a column to mark it with a `*` after the
+privilege instead, the way psql does.
 
 ## Highlights
 
-| Group                               | Default                                |
-|-------------------------------------|----------------------------------------|
-| `NeoTreeDatabasePrivilege`          | links to `Keyword`                     |
-| `NeoTreeDatabasePrivilegeNotHeld`   | links to `NeoTreeDimText`              |
-| `NeoTreeDatabasePrivilegeGrantable` | `NeoTreeDatabasePrivilege`, underlined |
+| Group                               | Default                                | Draws                |
+|-------------------------------------|----------------------------------------|----------------------|
+| `NeoTreeDatabasePrivilege`          | links to `Keyword`                     | a held privilege     |
+| `NeoTreeDatabasePrivilegeNotHeld`   | links to `NeoTreeDimText`              | a privilege not held |
+| `NeoTreeDatabasePrivilegeGrantable` | `NeoTreeDatabasePrivilege`, underlined | one with grant option |
+| `NeoTreeDatabaseSize`               | links to `Number`                      | nothing itself       |
+| `NeoTreeDatabaseSizeKB`             | `NeoTreeDatabaseSize`, dimmed 50%      | a size in B or KB    |
+| `NeoTreeDatabaseSizeMB`             | `NeoTreeDatabaseSize`, dimmed 10%      | a size in MB         |
+| `NeoTreeDatabaseSizeGB`             | `NeoTreeDatabaseSize`, bold            | a size in GB or TB   |
+| `NeoTreeDatabaseRows`               | links to `String`                      | nothing itself       |
+| `NeoTreeDatabaseRowsK`              | `NeoTreeDatabaseRows`, dimmed 50%      | rows under 1M        |
+| `NeoTreeDatabaseRowsM`              | `NeoTreeDatabaseRows`, dimmed 10%      | rows in M            |
+| `NeoTreeDatabaseRowsB`              | `NeoTreeDatabaseRows`, bold            | rows in B or T       |
+
+Every group is defined with `default`, so one you set yourself is kept. The underlined, dimmed and
+bold groups are copies of their base, taken when the source sets up and again after every
+colorscheme loads, so set the base before then, such as in your colorscheme, for them to pick it
+up. A dimmed group takes its base's foreground moved the given share of the way into the tree's
+background, which is `NeoTreeNormal`'s or else `Normal`'s. When the base has no foreground colour
+or the background has none, there is nothing to blend: the 50% groups link to `NeoTreeDimText`,
+and the 10% groups link to their base.
 
 ## Keys
 
@@ -258,7 +318,7 @@ I have no immediate plans to support other databases.
 | `init.lua`        | the source: what expands and what fetches                 |
 | `config.lua`      | the default config: renderers and keys                    |
 | `commands.lua`    | what the keys do                                          |
-| `components.lua`  | the icon and the detail text on each line                 |
+| `components.lua`  | the icon, detail text, rows and size on each line         |
 | `privileges.lua`  | the privilege columns on a grant row                      |
 | `highlights.lua`  | the highlight groups this source defines                  |
 | `focus.lua`       | keeping `b:db` on the node under the cursor               |

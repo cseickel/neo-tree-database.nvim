@@ -2,9 +2,10 @@
 What each line of the tree shows.
 
 `icon` says what kind of thing a node is, and `detail` says the one fact about
-it worth reading without opening it: how many tables a schema holds, roughly
-how many rows a table holds, what type a column or an argument is, what an
-index covers, what a function returns.
+it worth reading without opening it: how many relations a schema holds, what
+type a column or an argument is, what an index covers, what a function returns.
+`rows` and `size` are right-aligned columns holding a relation's row estimate
+and an object's size on disk.
 `privilege` is one column of a grant row's privileges.
 
 The common components are merged in below, so `indent`, `container` and the
@@ -12,6 +13,7 @@ rest stay available to a renderer.
 ]]
 
 local common = require("neo-tree.sources.common.components")
+local groups = require("neo-tree-database.highlights")
 local highlights = require("neo-tree.ui.highlights")
 local privileges = require("neo-tree-database.privileges")
 local routines = require("neo-tree-database.routines")
@@ -110,20 +112,6 @@ M.name = function(config, node, _)
   }
 end
 
---- A row estimate short enough to sit beside a name. The estimate is the
---- database's own and is never exact, which the leading tilde says.
----@param rows integer
----@return string
-local function approximate(rows)
-  local units = { { 1e12, "T" }, { 1e9, "B" }, { 1e6, "M" }, { 1e3, "K" } }
-  for _, unit in ipairs(units) do
-    if rows >= unit[1] then
-      return ("~%.1f%s"):format(rows / unit[1], unit[2])
-    end
-  end
-  return ("~%d"):format(rows)
-end
-
 ---@param count integer
 ---@param noun string
 ---@return string
@@ -149,18 +137,6 @@ DETAIL.schema = function(node)
   end
   return nil
 end
-
-local function relation_detail(node)
-  local rows = node.extra.record.rows
-  if type(rows) ~= "number" then
-    return nil
-  end
-  return approximate(rows)
-end
-
-DETAIL.table = relation_detail
-DETAIL.view = relation_detail
-DETAIL.materialized_view = relation_detail
 
 DETAIL.column = function(node)
   local column = node.extra.record
@@ -232,6 +208,93 @@ M.detail = function(config, node, _)
     text = " " .. text,
     highlight = config.highlight or highlights.DIM_TEXT,
   }
+end
+
+---@class dbtree.Unit
+---@field base number
+---@field suffix string
+---@field highlight string
+
+---@type dbtree.Unit[]
+local ROW_UNITS = {
+  { base = 1e12, suffix = "T", highlight = groups.ROWS_B },
+  { base = 1e9, suffix = "B", highlight = groups.ROWS_B },
+  { base = 1e6, suffix = "M", highlight = groups.ROWS_M },
+  { base = 1e3, suffix = "K", highlight = groups.ROWS_K },
+  { base = 1, suffix = "", highlight = groups.ROWS_K },
+}
+
+---@type dbtree.Unit[]
+local BYTE_UNITS = {
+  { base = 2 ^ 40, suffix = " TB", highlight = groups.SIZE_GB },
+  { base = 2 ^ 30, suffix = " GB", highlight = groups.SIZE_GB },
+  { base = 2 ^ 20, suffix = " MB", highlight = groups.SIZE_MB },
+  { base = 2 ^ 10, suffix = " KB", highlight = groups.SIZE_KB },
+  { base = 1, suffix = " B", highlight = groups.SIZE_KB },
+}
+
+--- The widest a rows cell can be, such as `~999K rows`.
+local ROWS_WIDTH = 10
+--- The widest a size cell can be, such as `~973 KB`.
+local SIZE_WIDTH = 7
+
+--- Returns `value` in the largest unit it rounds to at least 1 of, with one
+--- decimal below 10, and the unit's highlight. The last unit is the base,
+--- written as a whole number.
+---@param value number
+---@param units dbtree.Unit[]
+---@return string text
+---@return string highlight
+local function scaled(value, units)
+  for i = 1, #units - 1 do
+    local unit = units[i]
+    local amount = value / unit.base
+    local text = ("%.1f"):format(amount)
+    if tonumber(text) >= 10 then
+      text = ("%.0f"):format(amount)
+    end
+    if tonumber(text) >= 1 then
+      return text .. unit.suffix, unit.highlight
+    end
+  end
+  local unit = units[#units]
+  return ("%d%s"):format(value, unit.suffix), unit.highlight
+end
+
+--- Returns a right-aligned cell `width` wide holding `text`. neo-tree places
+--- right-aligned cells end to end without measuring them, so a cell of any
+--- other width would move the ones to its left out of line.
+---@param text string
+---@param width integer
+---@param highlight string|nil
+---@return neotree.Render.Node
+local function stat(text, width, highlight)
+  return { text = " " .. string.rep(" ", width - #text) .. text, highlight = highlight }
+end
+
+--- The database's own row estimate, which is never exact, as the `~` says.
+--- A node without one gets a blank cell.
+---@param node NuiTree.Node
+---@return neotree.Render.Node
+M.rows = function(_, node, _)
+  local rows = node.extra.record.rows
+  if not rows then
+    return stat("", ROWS_WIDTH)
+  end
+  local amount, highlight = scaled(rows, ROW_UNITS)
+  return stat(("~%s %s"):format(amount, rows == 1 and "row" or "rows"), ROWS_WIDTH, highlight)
+end
+
+--- An estimated size is marked with a `~`, as a row estimate is.
+---@param node NuiTree.Node
+---@return neotree.Render.Node
+M.size = function(_, node, _)
+  local record = node.extra.record
+  if not record.size then
+    return stat("", SIZE_WIDTH)
+  end
+  local amount, highlight = scaled(record.size, BYTE_UNITS)
+  return stat((record.size_estimated and "~" or "") .. amount, SIZE_WIDTH, highlight)
 end
 
 M.privilege = privileges.cell

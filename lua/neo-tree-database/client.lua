@@ -14,9 +14,15 @@ local TIMEOUT_MS = TIMEOUT_SECONDS * 1000
 
 ---@class dbtree.Request
 ---@field argv string[]
+---@field fallback dbtree.Fallback|nil
+
+---@class dbtree.Fallback
+---@field error string Text in the failed request's message that calls for `request`.
+---@field request dbtree.Request
 
 --- Runs `request` and hands back the decoded document, or a message naming what
---- went wrong.
+--- went wrong. A request that fails with its fallback's error is replaced by
+--- the fallback, whose answer is handed back instead.
 ---
 --- `on_done` always runs, always on a later tick, and always on the main loop,
 --- so a caller may set up whatever the callback will change after calling this
@@ -42,6 +48,10 @@ function M.run(request, on_done)
         message = (result.signal or 0) ~= 0
             and ("%s did not answer within %ds"):format(request.argv[1], TIMEOUT_SECONDS)
           or ("%s exited %d"):format(request.argv[1], result.code)
+      end
+      local fallback = request.fallback
+      if fallback and message:find(fallback.error, 1, true) then
+        return M.run(fallback.request, on_done)
       end
       return on_done(nil, message)
     end

@@ -10,12 +10,13 @@ Run it:
 duckdb -noheader -list -f fixture/duckdb.sql
 ```
 
-Two json documents come back, one per query. The second should hold two schemas,
-`analytics` and `main`, with `trades` carrying four columns, one index and three
-constraints, and `large_trades` carrying its `CREATE VIEW` text. `main` should
-hold the sequence `trade_ids` with its `CREATE SEQUENCE` text, and `analytics`
-should hold both overloads of `add2`, the first taking `a` and the second `a`
-and `b`.
+Two json documents come back, one per query. The first should hold one catalog,
+`memory`, with no size, because a database held in memory has no file. The
+second should hold two schemas, `analytics` and `main`, with `trades` carrying
+four columns, one index and three constraints, and `large_trades` carrying its
+`CREATE VIEW` text. `main` should hold the sequence `trade_ids` with its
+`CREATE SEQUENCE` text, and `analytics` should hold both overloads of `add2`,
+the first taking `a` and the second `a` and `b`.
 
 This is how a change to the duckdb queries gets checked without a server, and it
 is the only scheme that can be checked this way, because duckdb is the only one

@@ -44,16 +44,24 @@ function M.catalog_url(connection)
   return connection
 end
 
+-- duckdb reports no blocks for an in-memory database, which has no size on
+-- disk.
+local CATALOGS = [[
+select json_object('catalogs', coalesce(
+  (select to_json(list(json_object(
+     'name', d.database_name,
+     'size', case when s.total_blocks > 0 then s.block_size * s.total_blocks end
+   ) order by d.database_name))
+   from duckdb_databases() d
+   left join pragma_database_size() s on s.database_name = d.database_name
+   where not d.internal),
+  '[]'::json))
+]]
+
 ---@param connection string
 ---@return dbtree.Request
 function M.catalogs(connection)
-  return invoke(
-    connection,
-    [[select json_object('catalogs', coalesce(
-      (select to_json(list(database_name order by database_name))
-       from duckdb_databases() where not internal),
-      '[]'::json))]]
-  )
+  return invoke(connection, CATALOGS)
 end
 
 -- NOT NULL is a constraint of its own in duckdb, and the Columns node already

@@ -24,13 +24,17 @@ local M = {}
 ---@field member_of string[]
 ---@field members string[]
 
+---@class dbtree.ListedCatalog
+---@field name string
+---@field size integer|nil Bytes on disk, nil where the database cannot tell.
+
 ---@class dbtree.Server
----@field catalogs string[]
+---@field catalogs dbtree.ListedCatalog[]
 ---@field roles dbtree.Role[]|nil Nil where the database has no roles.
 
 ---@class dbtree.Roles What every node under Roles carries.
 ---@field by_name table<string, dbtree.Role>
----@field catalogs string[]
+---@field catalogs dbtree.ListedCatalog[]
 ---@field catalog_url fun(connection: string, catalog: string): string
 
 --- The Roles folder under the connection `node`, or nothing where `server`
@@ -146,7 +150,7 @@ function M.parts(node)
     for _, catalog in ipairs(roles.catalogs) do
       table.insert(
         documents,
-        items.catalog_document(node.extra.connection, catalog, roles.catalog_url(node.extra.url, catalog))
+        items.catalog_document(node.extra.connection, catalog.name, roles.catalog_url(node.extra.url, catalog.name))
       )
     end
     table.insert(result, folder_item(node, "role_grants", "Grants", { documents = documents }))

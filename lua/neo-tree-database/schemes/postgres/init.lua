@@ -25,15 +25,23 @@ local M = {}
 M.quoting = quote.ANSI
 
 --- psql prints the one value and nothing else: no alignment, no header, no
---- pager, and no psqlrc that could turn any of those back on.
+--- pager, and no psqlrc that could turn any of those back on. `commands` run in
+--- order on one connection, and quiet mode keeps a SET from printing anything.
 ---@param connection string
----@param sql string
+---@param commands string[]
 ---@return dbtree.Request
-local function invoke(connection, sql)
-  return {
-    argv = { "psql", connection, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c", sql },
-  }
+local function invoke(connection, commands)
+  local argv = { "psql", connection, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1" }
+  for _, command in ipairs(commands) do
+    vim.list_extend(argv, { "-c", command })
+  end
+  return { argv = argv }
 end
+
+local LOCK_TIMEOUT = "set lock_timeout = '5s'"
+--- Verbose errors carry the SQLSTATE, and 55P03 is a lock timeout.
+local VERBOSE = "\\set VERBOSITY verbose"
+local LOCK_TIMED_OUT = "55P03"
 
 --- Each database on the server is its own connection, because postgres cannot
 --- query across one.
@@ -47,16 +55,25 @@ end
 ---@param connection string
 ---@return dbtree.Request
 function M.catalogs(connection)
-  return invoke(connection, queries.CATALOGS)
+  return invoke(connection, { queries.CATALOGS })
 end
 
 --- The catalog is reached by connecting to it, so the query names no database
 --- and carries nothing from the tree into sql.
+---
+--- Measuring sizes waits behind any table under an exclusive lock, so a
+--- catalog that cannot get its locks in time is read again with the sizes
+--- pg_class last recorded, which take none.
 ---@param catalog_url string
 ---@param catalog string
 ---@return dbtree.Request
 function M.introspect(catalog_url, catalog)
-  return invoke(catalog_url, queries.INTROSPECT)
+  local request = invoke(catalog_url, { VERBOSE, LOCK_TIMEOUT, queries.INTROSPECT })
+  request.fallback = {
+    error = LOCK_TIMED_OUT,
+    request = invoke(catalog_url, { LOCK_TIMEOUT, queries.INTROSPECT_ESTIMATED }),
+  }
+  return request
 end
 
 --- The name db-query's catalog knows a relation by. The catalog is the

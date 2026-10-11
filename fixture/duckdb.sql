@@ -8,8 +8,13 @@ create sequence trade_ids start 100;
 create macro analytics.add2(a) as a + 2, (a, b) as a + b;
 
 select json_object('catalogs', coalesce(
-  (select to_json(list(database_name order by database_name))
-   from duckdb_databases() where not internal),
+  (select to_json(list(json_object(
+     'name', d.database_name,
+     'size', case when s.total_blocks > 0 then s.block_size * s.total_blocks end
+   ) order by d.database_name))
+   from duckdb_databases() d
+   left join pragma_database_size() s on s.database_name = d.database_name
+   where not d.internal),
   '[]'::json));
 
 select json_object('schemas', coalesce((
