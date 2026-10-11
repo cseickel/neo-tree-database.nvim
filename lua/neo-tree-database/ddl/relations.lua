@@ -1,19 +1,17 @@
---[[
-The statements for a schema, a relation, and the parts of a relation.
-]]
+--- Builds the statements for a schema, a relation, and a relation's columns,
+--- indexes and constraints.
 
 local quote = require("neo-tree-database.quote")
 
 ---@type dbtree.Statements
 local M = { info = {}, drop = {}, change = {} }
 
-local KEYWORD = {
+local RELATION_KEYWORD = {
   table = "TABLE",
   view = "VIEW",
   materialized_view = "MATERIALIZED VIEW",
 }
 
---- The `schema`.`name` of the relation `node` sits on or inside.
 ---@param node NuiTree.Node
 ---@param quoting dbtree.Quoting
 ---@return string
@@ -130,7 +128,7 @@ local function relation_drop(node, scheme)
     title = "Drop " .. node.extra.schema .. "." .. node.extra.relation,
     lines = {
       "DROP "
-        .. KEYWORD[node.type]
+        .. RELATION_KEYWORD[node.type]
         .. " "
         .. relation_name(node, scheme.quoting)
         .. ";",
@@ -177,26 +175,25 @@ M.change.column = function(node, scheme)
 end
 
 M.change.index = function(node, scheme)
-  local index = node.extra.record.name
+  local index_name = node.extra.record.name
   return {
-    title = "Alter " .. index,
+    title = "Alter " .. index_name,
     lines = {
       "ALTER INDEX "
-        .. quote.qualified(node.extra.schema, index, scheme.quoting)
+        .. quote.qualified(node.extra.schema, index_name, scheme.quoting)
         .. " RENAME TO "
-        .. quote.identifier(index, scheme.quoting)
+        .. quote.identifier(index_name, scheme.quoting)
         .. ";",
     },
   }
 end
 
---- A constraint is not altered in place anywhere this plugin speaks to, so the
---- change is the pair of statements that replaces it.
 M.change.constraint = function(node, scheme)
   local constraint = node.extra.record
   local table_name = relation_name(node, scheme.quoting)
   local constraint_name = quote.identifier(constraint.name, scheme.quoting)
 
+  -- Neither postgres nor duckdb can change a constraint's definition in place.
   local lines = { "ALTER TABLE " .. table_name .. " DROP CONSTRAINT " .. constraint_name .. ";" }
   if constraint.definition then
     table.insert(
@@ -214,25 +211,24 @@ M.change.constraint = function(node, scheme)
   return { title = "Replace " .. constraint.name, lines = lines }
 end
 
---- A new name is given without its schema, because RENAME TO keeps the
---- relation in the schema it is in.
 local function relation_change(node, scheme)
-  local name = relation_name(node, scheme.quoting)
-  local keyword = KEYWORD[node.type]
+  local qualified_name = relation_name(node, scheme.quoting)
+  local keyword = RELATION_KEYWORD[node.type]
   return {
     title = "Alter " .. node.extra.schema .. "." .. node.extra.relation,
     lines = {
+      -- postgres rejects a schema-qualified name after RENAME TO.
       "ALTER "
         .. keyword
         .. " "
-        .. name
+        .. qualified_name
         .. " RENAME TO "
         .. quote.identifier(node.extra.relation, scheme.quoting)
         .. ";",
       "ALTER "
         .. keyword
         .. " "
-        .. name
+        .. qualified_name
         .. " SET SCHEMA "
         .. quote.identifier(node.extra.schema, scheme.quoting)
         .. ";",

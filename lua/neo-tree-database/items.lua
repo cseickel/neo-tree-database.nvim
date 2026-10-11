@@ -1,16 +1,4 @@
---[[
-The pieces every tree item is built from, and the levels above a catalog.
-
-The building is done a level at a time, because a catalog holding ten thousand
-tables would otherwise become a hundred thousand nodes the moment it was
-opened, all of them collapsed and none of them looked at. `objects.lua` and
-`routines.lua` build what a catalog holds, and `roles.lua` and `grants.lua`
-build who can reach it.
-
-Every container is built with a single child saying it has not loaded yet. That
-child is what draws the expander arrow, and neo-tree replaces it wholesale when
-the real children arrive.
-]]
+--- Builds tree items: the shapes every node shares, and the nodes above a catalog.
 
 local M = {}
 
@@ -23,15 +11,14 @@ local M = {}
 ---@field children dbtree.Item[]|nil
 ---@field _is_expanded boolean|nil
 
----@class dbtree.Document An answer a node is built from, and how to ask for it.
----@field id string What the answer is cached under.
+---@class dbtree.Document A query result that a node is built from, and where to query it.
+---@field id string The cache key of the result.
 ---@field url string
----@field catalog string|nil The catalog the answer describes, nil for a connection's catalog list.
+---@field catalog string|nil The catalog the result describes, nil for a connection's catalog list.
 
---- A name as one segment of a node id. The three characters that separate or
---- introduce a segment are encoded, so a schema named `a` holding a table `b`
---- cannot produce the id of a schema named `a/b`, and a name can never produce
---- a segment starting with `@`, which marks a heading or a placeholder.
+--- Returns `name` with `%`, `/` and `@` percent-encoded, so it can be one segment
+--- of a node id. Ids separate segments with `/` and start a heading or
+--- placeholder segment with `@`.
 ---@param name string
 ---@return string
 function M.segment(name)
@@ -40,6 +27,8 @@ function M.segment(name)
   end))
 end
 
+--- Returns a container whose only child is a loading placeholder. neo-tree draws
+--- an expander for it until the real children replace the placeholder.
 ---@param id string
 ---@param name string
 ---@param node_type string
@@ -72,10 +61,9 @@ function M.leaf(id, name, node_type, extra)
   return { id = id, name = name, type = node_type, extra = extra }
 end
 
---- The fields a node below a connection takes from its parent, so a command on
---- any of them can reach the database and name the object it sits in, with
---- `fields` added on top.
----@param parent table The parent node's `extra`.
+--- Returns the connection, catalog, url, schema and relation of `parent`, the
+--- parent node's `extra`, with `fields` added.
+---@param parent table
 ---@param fields table
 ---@return table
 function M.inherit(parent, fields)
@@ -88,8 +76,7 @@ function M.inherit(parent, fields)
   }, fields)
 end
 
---- `name(arguments)` for a function, which postgres tells apart from its
---- overloads by the argument types. Just `name` where the database keeps none.
+--- Returns `name(arguments)`, or `name` alone when `arguments` is nil.
 ---@param name string
 ---@param arguments string|nil
 ---@return string
@@ -100,28 +87,25 @@ function M.signature(name, arguments)
   return name
 end
 
---- `routines` gathered into functions, each the overloads sharing a kind and a
---- name, in the order given. The tree and a role's grants number overloads by
---- their place here, so both read the same number for the same overload.
+--- Returns `routines` grouped by kind and name, with the groups and the routines
+--- in each group in the order given.
 ---@param routines dbtree.Routine[]
 ---@return dbtree.Routine[][]
-function M.overloads(routines)
-  local functions, by_key = {}, {}
+function M.group_overloads(routines)
+  local groups, group_by_key = {}, {}
   for _, routine in ipairs(routines) do
     local key = routine.kind .. "/" .. routine.name
-    local overloads = by_key[key]
-    if not overloads then
-      overloads = {}
-      by_key[key] = overloads
-      table.insert(functions, overloads)
+    local group = group_by_key[key]
+    if not group then
+      group = {}
+      group_by_key[key] = group
+      table.insert(groups, group)
     end
-    table.insert(overloads, routine)
+    table.insert(group, routine)
   end
-  return functions
+  return groups
 end
 
---- What a node shows in place of children it could not fetch. Rendering this
---- does not mean the node is loaded, and the caller says so.
 ---@param parent_id string
 ---@param text string
 ---@return dbtree.Item[]
@@ -129,14 +113,10 @@ function M.message(parent_id, text)
   return { M.leaf(parent_id .. "/@message", text, "message", { kind = "message" }) }
 end
 
---- The id every other id is built from.
 M.ROOT = "db:"
 
---- The single node everything hangs under.
----
---- A root exists rather than the connections standing at the top level because
---- neo-tree hides a tree's root by marking the first item it is given, and with
---- no root that mark would fall on the first connection and hide it.
+--- Returns the root node holding `children`. neo-tree hides the first item it is
+--- given as the tree's root, so the connections need a parent above them.
 ---@param children table[]
 ---@return dbtree.Item[]
 function M.root(children)
@@ -159,9 +139,8 @@ local function connection_id(connection)
   return M.ROOT .. "/" .. M.segment(connection.name)
 end
 
---- The id of the node for `catalog` on `connection`. A catalog's document is
---- cached under this id, so it is also how a node elsewhere in the tree, such
---- as a role's grants in that catalog, finds the same document.
+--- Returns the id of the node for `catalog`, which is also the cache key of the
+--- catalog's document.
 ---@param connection dbtree.Connection
 ---@param catalog string
 ---@return string
@@ -169,7 +148,6 @@ function M.catalog_id(connection, catalog)
   return connection_id(connection) .. "/" .. M.segment(catalog)
 end
 
---- The document describing `catalog` on `connection`, reached at `url`.
 ---@param connection dbtree.Connection
 ---@param catalog string
 ---@param url string
@@ -181,11 +159,11 @@ end
 ---@param connections dbtree.Connection[]
 ---@return dbtree.Item[]
 function M.connections(connections)
-  local items = {}
+  local connection_items = {}
   for _, connection in ipairs(connections) do
     local id = connection_id(connection)
     table.insert(
-      items,
+      connection_items,
       M.container(id, connection.name, "connection", {
         kind = "connection",
         connection = connection,
@@ -194,7 +172,7 @@ function M.connections(connections)
       })
     )
   end
-  return items
+  return connection_items
 end
 
 return M

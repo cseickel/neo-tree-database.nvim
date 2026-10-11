@@ -1,14 +1,4 @@
---[[
-What the keys do.
-
-Only the commands named here exist for this source. The shared commands that
-create, rename, delete and move files are deliberately not among them, because
-every one of them reads a path that a database node does not have.
-
-Opening is owned here rather than taken from the shared `open`, because that one
-hands a node back to its source only when the node's type is `directory`, and
-these nodes carry what they are as their type.
-]]
+--- Defines the commands that this source's keys run.
 
 local cc = require("neo-tree.sources.common.commands")
 local renderer = require("neo-tree.ui.renderer")
@@ -26,7 +16,7 @@ local M = {}
 
 ---@param state neotree.StateWithTree
 ---@return NuiTree.Node|nil
-local function current(state)
+local function node_under_cursor(state)
   local node = state.tree:get_node()
   if node and node.extra then
     return node
@@ -41,8 +31,10 @@ local function quoting_for(node)
   return scheme and scheme.quoting or quote.ANSI
 end
 
+--- Opens `spec` with the user's `open_scratch` function when one is configured,
+--- and in this plugin's scratch buffer otherwise.
 ---@param spec dbtree.Scratch
-local function hand_off(spec)
+local function open_in_scratch(spec)
   local configured = source.config.open_scratch
   if type(configured) == "function" then
     return configured(spec)
@@ -50,13 +42,11 @@ local function hand_off(spec)
   return scratch.open(spec)
 end
 
----Expands or collapses the node under the cursor.
----
----Collapsing is tried before loading, so a node showing why it could not load
----still closes. Opening it again is what asks the database a second time.
+--- Expands or collapses the node under the cursor, loading its children the
+--- first time it expands.
 ---@param state neotree.StateWithTree
 M.open = function(state)
-  local node = current(state)
+  local node = node_under_cursor(state)
   if not node then
     return
   end
@@ -76,23 +66,17 @@ M.open = function(state)
   end
 end
 
--- Neo-tree binds `<space>` to `toggle_node` for every source, and its shared
--- implementation expands a node without loading it, which here would reveal the
--- placeholder child instead of the children.
+-- neo-tree's shared toggle_node expands a node without loading its children.
 M.toggle_node = M.open
 
----Rebuilds the tree from the connection list, keeping what the databases have
----already answered.
+--- Rebuilds the tree from the connection list and keeps the cached answers.
 ---@param state neotree.StateWithTree
 M.refresh = function(state)
   source.navigate(state)
 end
 
----Asks the database again for whatever holds the node under the cursor.
----
----Only a node with `documents` asks the database. Refreshing anything below
----one would rebuild it from the same held documents and show the same thing
----again, so a refresh walks up to one first.
+--- Queries the database again for the nearest node at or above the cursor that
+--- holds `documents`.
 ---@param state neotree.StateWithTree
 M.refresh_node = function(state)
   local node = state.tree:get_node()
@@ -120,14 +104,6 @@ local function relation_name(extra, quoting)
   return quote.qualified(extra.schema, extra.relation, quoting)
 end
 
---- What each node type is called in sql. A column, an index and a constraint
---- are named on their own, because that is the form they are typed in.
---- Everything a schema holds is qualified by it, and a single function also
---- carries its argument types, which tell it apart from its overloads.
----
---- The root, a heading, a placeholder, an error message and a grant name
---- nothing, and copying their label would put the word `Databases` or the text
---- of an error in the clipboard.
 ---@type table<string, fun(extra: table, quoting: dbtree.Quoting): string>
 local SQL_NAMES = {
   catalog = function(extra, quoting)
@@ -156,20 +132,19 @@ local SQL_NAMES = {
   end,
 }
 
---- What the node under the cursor is called in sql.
 ---@param node NuiTree.Node
 ---@return string|nil
 local function sql_name(node)
-  local name = SQL_NAMES[node.type]
-  if not name then
+  local name_of = SQL_NAMES[node.type]
+  if not name_of then
     return nil
   end
-  return name(node.extra, quoting_for(node))
+  return name_of(node.extra, quoting_for(node))
 end
 
 ---@param state neotree.StateWithTree
 M.yank_name = function(state)
-  local node = current(state)
+  local node = node_under_cursor(state)
   if not node then
     return
   end
@@ -184,12 +159,12 @@ M.yank_name = function(state)
   vim.notify("neo-tree database: copied " .. name)
 end
 
-local DESCRIBED = { table = true, view = true, materialized_view = true, column = true }
+local DESCRIBABLE_TYPES = { table = true, view = true, materialized_view = true, column = true }
 
---- What to tell the user for each reason db-query's describe gives as a code.
---- Its other reasons are already sentences.
+-- db-query's describe reports these errors as codes and every other error as a
+-- sentence.
 ---@type table<string, fun(node: NuiTree.Node): string>
-local UNDESCRIBED = {
+local DESCRIBE_ERROR_MESSAGES = {
   ["reading"] = function(node)
     return ("db-query is still reading the catalog of %s. Try again in a moment."):format(focus.db_name(node))
   end,
@@ -206,14 +181,10 @@ local UNDESCRIBED = {
   end,
 }
 
---- Shows db-query's description of the relation or column under the cursor.
----
---- db-query reads a database's catalog the first time it is asked about it, so
---- the first describe of a database finds nothing and starts that read.
 ---@param state neotree.StateWithTree
 M.describe = function(state)
-  local node = current(state)
-  if not node or not DESCRIBED[node.type] then
+  local node = node_under_cursor(state)
+  if not node or not DESCRIBABLE_TYPES[node.type] then
     return vim.notify("neo-tree database: nothing here to describe", vim.log.levels.WARN)
   end
 
@@ -229,8 +200,8 @@ M.describe = function(state)
     column = node.type == "column" and extra.record.name or nil,
   })
   if not lines then
-    local explain = UNDESCRIBED[err]
-    return vim.notify("neo-tree database: " .. (explain and explain(node) or err), vim.log.levels.WARN)
+    local message_for = DESCRIBE_ERROR_MESSAGES[err]
+    return vim.notify("neo-tree database: " .. (message_for and message_for(node) or err), vim.log.levels.WARN)
   end
 
   local title = node.type == "column" and (extra.relation .. "." .. extra.record.name)
@@ -238,12 +209,12 @@ M.describe = function(state)
   popup.show({ title = title, lines = lines, language = "markdown" })
 end
 
---- Shows what `build` writes for the node under the cursor, and opens it in a
---- buffer if the user asks for it there. Nothing is run either way.
+--- Shows the statement that `build` returns for the node under the cursor in a
+--- popup, which can open it in a scratch buffer.
 ---@param state neotree.StateWithTree
 ---@param build fun(node: NuiTree.Node): dbtree.Statement|nil, string|nil
 local function show_statement(state, build)
-  local node = current(state)
+  local node = node_under_cursor(state)
   if not node then
     return
   end
@@ -258,7 +229,7 @@ local function show_statement(state, build)
     lines = statement.lines,
     language = "sql",
     on_open = function(lines)
-      hand_off({
+      open_in_scratch({
         state = state,
         url = node.extra.url,
         lines = lines,
@@ -283,16 +254,17 @@ M.object_change = function(state)
   show_statement(state, ddl.change)
 end
 
----Opens a select against whatever relation the cursor is on or inside.
+--- Opens a scratch buffer holding a select from the relation that the cursor is
+--- on or inside.
 ---@param state neotree.StateWithTree
 M.open_scratch = function(state)
-  local node = current(state)
+  local node = node_under_cursor(state)
   if not node or not node.extra.relation then
     return vim.notify("neo-tree database: not inside a table or view", vim.log.levels.WARN)
   end
 
   local name = quote.qualified(node.extra.schema, node.extra.relation, quoting_for(node))
-  hand_off({
+  open_in_scratch({
     state = state,
     url = node.extra.url,
     title = node.extra.schema .. "." .. node.extra.relation,
@@ -300,8 +272,6 @@ M.open_scratch = function(state)
   })
 end
 
--- The shared commands that move around the tree and its window behave the same
--- here as anywhere. The ones that write to a filesystem are left out.
 for _, name in ipairs({
   "cancel",
   "close_all_nodes",

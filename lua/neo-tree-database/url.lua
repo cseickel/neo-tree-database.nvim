@@ -1,39 +1,19 @@
---[[
-Connection urls.
-
-A url written for vim-dadbod names a server and a database at once, and this
-tree browses every database on a server, so the job this module exists for is
-producing the url of a sibling database from the url the user wrote down.
-
-That job is done by substring surgery rather than by parsing into parts and
-formatting them back, because everything the user wrote past the database name,
-their query parameters and their encoding of them, has to survive untouched.
-For the same reason this stays three functions and never becomes a url parser.
-Anything needing a host, a port or a password should call vim-dadbod's
-`db#url#parse`, which has no such round trip to preserve.
-]]
+--- Reads connection urls, and builds the url of another database on the same
+--- server.
 
 local M = {}
 
---- The in-memory database, which several schemes spell this way and which is a
---- name rather than a path.
 M.MEMORY = ":memory:"
 
---- The scheme of `url`, lowercased, empty when it has none.
+--- Returns the scheme of `url` in lowercase, or an empty string when it has none.
 ---@param url string
 ---@return string
 function M.scheme(url)
   return (url:match("^(%a[%w+.%-]*):") or ""):lower()
 end
 
---- The file a `scheme:path` url names, empty when it names no file and so means
---- the in-memory database.
----
---- `vim.fs.normalize` resolves `~` and environment variables and nothing else.
---- `vim.fn.expand` would additionally read `*`, `[`, `{`, `%` and `#` as
---- wildcards, and a path holding one of those would come back empty, which
---- reads here as a request for an in-memory database rather than as the error
---- it is.
+--- Returns the file that a `scheme:path` url names, or an empty string when the
+--- url means the in-memory database.
 ---@param url string
 ---@return string
 function M.file(url)
@@ -41,23 +21,24 @@ function M.file(url)
   if path == "" or path == M.MEMORY then
     return ""
   end
+  -- vim.fn.expand would also read `*`, `[`, `{`, `%` and `#` as wildcards, and
+  -- return an empty path when they match nothing.
   return vim.fs.normalize(path)
 end
 
---- The parts of a `scheme://authority/database?query#fragment` url. Nil for a
---- url that names a file rather than a server, which has no authority to split
---- on and no database to replace.
+--- Returns the parts of a `scheme://authority/database?query#fragment` url, or
+--- nil for a url that names a file.
 ---@param url string
 ---@return { scheme: string, authority: string, database: string, suffix: string }|nil
-local function hierarchical(url)
-  local scheme, authority, tail = url:match("^(%a[%w+.%-]*)://([^/]*)(.*)$")
+local function split_server_url(url)
+  local scheme, authority, after_authority = url:match("^(%a[%w+.%-]*)://([^/]*)(.*)$")
   if not scheme then
     return nil
   end
 
-  local database, suffix = tail:match("^/([^?#]*)(.*)$")
+  local database, suffix = after_authority:match("^/([^?#]*)(.*)$")
   if not database then
-    database, suffix = "", tail
+    database, suffix = "", after_authority
   end
 
   return {
@@ -68,14 +49,13 @@ local function hierarchical(url)
   }
 end
 
---- `url` with its database replaced by `name`, so one connection reaches every
---- database on its server. Unchanged for a url that names a file, where the
---- file is the database.
+--- Returns `url` with its database replaced by `name`. A url that names a file
+--- comes back unchanged.
 ---@param url string
 ---@param name string
 ---@return string
 function M.with_database(url, name)
-  local parts = hierarchical(url)
+  local parts = split_server_url(url)
   if not parts then
     return url
   end

@@ -1,13 +1,4 @@
---[[
-Showing a statement or a description.
-
-Either one is read before it is used, so it arrives in a window rather than in
-a register or a buffer. From there `y` takes it, and for a statement `o` opens
-it somewhere it can be run. Nothing here runs anything.
-
-The buffer keeps neo-tree's own filetype, because other parts of neo-tree
-recognise their popups by it, and is highlighted separately as sql or markdown.
-]]
+--- Shows a statement or a description in a popup window.
 
 local NuiPopup = require("nui.popup")
 local popups = require("neo-tree.ui.popups")
@@ -17,13 +8,12 @@ local M = {}
 local MIN_WIDTH = 40
 local MARGIN = 8
 
----@class dbtree.Shown
+---@class dbtree.PopupContent
 ---@field title string
 ---@field lines string[]
 ---@field language "sql"|"markdown"
----@field on_open fun(lines: string[])|nil Opens the lines somewhere they can be run. `o` is mapped only when this is set.
+---@field on_open fun(lines: string[])|nil Called with the lines when the user presses `o`, which is mapped only when this is set.
 
---- The width that fits `lines` and `title` without overflowing the editor.
 ---@param lines string[]
 ---@param title string
 ---@return integer
@@ -41,16 +31,16 @@ local function height_for(rows)
   return math.max(1, math.min(rows, vim.o.lines - MARGIN))
 end
 
----@param shown dbtree.Shown
-function M.show(shown)
-  local lines = shown.lines
+---@param content dbtree.PopupContent
+function M.show(content)
+  local lines = content.lines
   if #lines == 0 then
-    vim.notify("neo-tree database: nothing to show for " .. shown.title, vim.log.levels.WARN)
+    vim.notify("neo-tree database: nothing to show for " .. content.title, vim.log.levels.WARN)
     return
   end
 
-  local keys = shown.on_open and "y yank, o open, q close" or "y yank, q close"
-  local title = shown.title .. "  (" .. keys .. ")"
+  local key_hints = content.on_open and "y yank, o open, q close" or "y yank, q close"
+  local title = content.title .. "  (" .. key_hints .. ")"
   local width = width_for(lines, title)
 
   local window = NuiPopup(popups.popup_options(title, MIN_WIDTH, {
@@ -69,30 +59,32 @@ function M.show(shown)
     return
   end
 
-  if shown.language == "markdown" then
+  -- neo-tree recognises its popups by their filetype, so the language is set
+  -- through treesitter or syntax instead.
+  if content.language == "markdown" then
     vim.treesitter.start(window.bufnr, "markdown")
     vim.wo[window.winid].conceallevel = 2
     vim.wo[window.winid].concealcursor = "n"
   else
-    vim.bo[window.bufnr].syntax = shown.language
+    vim.bo[window.bufnr].syntax = content.language
   end
   vim.bo[window.bufnr].modifiable = false
 
-  -- The rows on screen differ from the lines held once long lines wrap and the
-  -- markdown fences are concealed.
+  -- Wrapped lines and concealed markdown fences make the rows on screen differ
+  -- from the number of lines.
   local rows = vim.api.nvim_win_text_height(window.winid, {}).all
   window:update_layout({ size = { width = width, height = height_for(rows) } })
 
-  local text = table.concat(lines, "\n")
+  local copied_text = table.concat(lines, "\n")
   window:map("n", "y", function()
-    vim.fn.setreg('"', text, "l")
-    vim.fn.setreg("+", text, "l")
-    vim.fn.setreg("*", text, "l")
+    vim.fn.setreg('"', copied_text, "l")
+    vim.fn.setreg("+", copied_text, "l")
+    vim.fn.setreg("*", copied_text, "l")
     window:unmount()
-    vim.notify("neo-tree database: copied " .. shown.title)
+    vim.notify("neo-tree database: copied " .. content.title)
   end, { noremap = true })
 
-  local on_open = shown.on_open
+  local on_open = content.on_open
   if on_open then
     window:map("n", "o", function()
       window:unmount()

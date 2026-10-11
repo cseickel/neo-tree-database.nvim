@@ -1,42 +1,35 @@
---[[
-The source's default config: how each node type renders, and what each key does.
-]]
+--- Returns the source's default config, which sets how each node type renders and
+--- what each key does.
 
 ---@class (exact) neotree.Config.Database : neotree.Config.Source
 ---@field connections dbtree.Connection[]|fun(): dbtree.Connection[]|nil
 ---@field open_scratch fun(spec: dbtree.Scratch)|nil
 
---- Every node type this source emits needs its own renderer, because a type
---- with none renders as `type: name` with the type spelled out.
 ---@param indent table
----@param after table[] What follows the name.
+---@param after_name table[]
 ---@return table[]
-local function line(indent, after)
+local function renderer(indent, after_name)
   local content = { { "name", zindex = 10 } }
-  for _, component in ipairs(after) do
+  for _, component in ipairs(after_name) do
     table.insert(content, vim.tbl_extend("force", { zindex = 10 }, component))
   end
   return { indent, { "icon" }, { "container", content = content } }
 end
 
 local function branch(...)
-  return line({ "indent", with_expanders = true }, { ... })
+  return renderer({ "indent", with_expanders = true }, { ... })
 end
 
---- A node that never opens, so it draws no expander.
 local function leaf(...)
-  return line({ "indent" }, { ... })
+  return renderer({ "indent" }, { ... })
 end
 
 local DETAIL = { "detail" }
---- neo-tree drops a component from every line once the window is narrower
---- than its `required_width`. A node with a size and no rows still takes a
---- blank rows cell, so every size lines up in one column.
 local SIZE = { "size", align = "right", required_width = 40 }
 local ROWS = { "rows", align = "right", required_width = 50 }
 
---- The privilege columns a grant row shows. No kind of object can have two of
---- the privileges one column lists, so each cell holds a single word.
+-- No kind of object has more than one of the privileges in a column, so each
+-- cell holds one word.
 local PRIVILEGE_COLUMNS = {
   { "SELECT", "CREATE", "EXECUTE" },
   { "INSERT", "USAGE", "CONNECT" },
@@ -45,19 +38,17 @@ local PRIVILEGE_COLUMNS = {
   { "TRUNCATE" },
 }
 
-local function grant_line()
+local function grant_renderer()
   local columns = {}
-  for _, grants in ipairs(PRIVILEGE_COLUMNS) do
-    table.insert(columns, { "privilege", grants = grants, align = "right" })
+  for _, column_privileges in ipairs(PRIVILEGE_COLUMNS) do
+    table.insert(columns, { "privilege", grants = column_privileges, align = "right" })
   end
   return leaf(unpack(columns))
 end
 
---- Keys neo-tree binds for every source that mean nothing here. A database node
---- has no path, so the commands behind these keys either do nothing or reach
---- for a field that is not there. They are turned off rather than left to
---- resolve to a warning and a key that silently does nothing.
-local DISABLED = {
+-- neo-tree binds these keys in every source to commands that read a node's file
+-- path.
+local DISABLED_KEYS = {
   "a",
   "A",
   "T",
@@ -92,13 +83,14 @@ local mappings = {
   ["c"] = "object_change",
   ["s"] = "open_scratch",
 }
-for _, key in ipairs(DISABLED) do
+for _, key in ipairs(DISABLED_KEYS) do
   mappings[key] = "noop"
 end
 
 return {
   connections = nil,
   open_scratch = nil,
+  -- neo-tree renders a node type that has no renderer as `type: name`.
   renderers = {
     root = { { "indent" }, { "icon" }, { "name" } },
     connection = branch(DETAIL),
@@ -119,7 +111,7 @@ return {
     column = leaf(DETAIL),
     index = leaf(DETAIL, SIZE, ROWS),
     constraint = leaf(DETAIL),
-    grant = grant_line(),
+    grant = grant_renderer(),
     loading = { { "indent" }, { "name" } },
     message = { { "indent", with_markers = false }, { "name" } },
   },

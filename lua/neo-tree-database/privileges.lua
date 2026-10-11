@@ -1,22 +1,4 @@
---[[
-The privilege columns on a grant row.
-
-Each `privilege` entry in a renderer is one column, and its `grants` lists the
-privileges it shows. A row shows the ones its kind of object can have, held or
-not, each in its own highlight. A row whose kind can have none of them shows a
-blank cell.
-
-The window's width picks how privileges are written: in full, as 3 letters, as
-2, or as psql's one-letter codes. `levels` gives the narrowest window each of
-the first three is used in.
-
-neo-tree places right-aligned cells end to end from the right edge, so a cell
-narrower than its column would pull every cell to its left out of line. Every
-cell is therefore drawn at its column's full width, with its privileges at the
-left and the padding after them. A column's width is set by its longest name in
-the window's form, or by the codes of every privilege one kind matches in it,
-whichever is wider.
-]]
+--- Renders the privilege columns of a grant row.
 
 local highlights = require("neo-tree-database.highlights")
 
@@ -32,14 +14,14 @@ local M = {}
 ---@field grant_option "highlight"|"asterisk"|nil How a privilege held with grant option is marked. Defaults to `highlight`.
 ---@field levels dbtree.PrivilegeLevels|nil The narrowest window each form is used in. Defaults to `DEFAULT_LEVELS`.
 
---- The default columns take 39 characters in full, 20 as 3 letters and 15 as
---- 2, and each level leaves at least 30 for the indent, icon and name. With
---- `grant_option = "asterisk"` every level takes 5 more.
+-- The default columns take 39 characters in full, 20 in three letters and 15 in
+-- two, and each level leaves 30 or more for the indent, icon and name.
+-- `grant_option = "asterisk"` adds 5 to each.
 ---@type dbtree.PrivilegeLevels
 local DEFAULT_LEVELS = { full = 75, three = 50, two = 45 }
---- Each privilege's code as psql's `\dp` writes it, its full form where the
---- name is too long for a column of the others, and its two-letter form where
---- the first two letters would not tell it apart from another.
+
+-- `code` is the letter psql's `\dp` uses. `word` replaces a name too long for its
+-- column, and `two` replaces first two letters that another privilege shares.
 ---@type table<string, { code: string, word: string|nil, two: string|nil }>
 local FORMS = {
   SELECT = { code = "r" },
@@ -57,27 +39,24 @@ local FORMS = {
   USAGE = { code = "U" },
 }
 
-local RELATION = { "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN" }
-local ROUTINE = { "EXECUTE" }
+local RELATION_PRIVILEGES = { "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN" }
+local ROUTINE_PRIVILEGES = { "EXECUTE" }
 
---- The privileges each kind of grant target can have. `column` is a grant on
---- one column of a relation.
 ---@type table<string, string[]>
-local POSSIBLE = {
+local PRIVILEGES_BY_KIND = {
   database = { "CONNECT", "CREATE", "TEMPORARY" },
   schema = { "USAGE", "CREATE" },
-  table = RELATION,
-  view = RELATION,
-  materialized_view = RELATION,
+  table = RELATION_PRIVILEGES,
+  view = RELATION_PRIVILEGES,
+  materialized_view = RELATION_PRIVILEGES,
   column = { "SELECT", "INSERT", "UPDATE", "REFERENCES" },
   sequence = { "SELECT", "UPDATE", "USAGE" },
-  ["function"] = ROUTINE,
-  procedure = ROUTINE,
-  aggregate = ROUTINE,
+  ["function"] = ROUTINE_PRIVILEGES,
+  procedure = ROUTINE_PRIVILEGES,
+  aggregate = ROUTINE_PRIVILEGES,
 }
 
---- The forms in order from the widest window to the narrowest. A cell starts
---- at the window's form and moves down the list until its privileges fit.
+-- Ordered from the full name down to psql's one-letter code.
 ---@type (fun(name: string): string)[]
 local SHORTENINGS = {
   function(name)
@@ -96,58 +75,64 @@ local SHORTENINGS = {
 
 ---@param target dbtree.GrantTarget
 ---@return string[]
-local function possible_for(target)
+local function privileges_for(target)
   local kind = target.column and "column" or target.kind
-  local possible = POSSIBLE[kind]
-  if not possible then
+  local privileges = PRIVILEGES_BY_KIND[kind]
+  if not privileges then
     error("neo-tree database: no privileges are known for a " .. kind)
   end
-  return possible
+  return privileges
 end
 
---- The names in `grants` that appear in `possible`, in the column's order.
+--- Returns the names in `grants` that are also in `privileges`, in the order of
+--- `grants`.
 ---@param grants string[]
----@param possible string[]
+---@param privileges string[]
 ---@return string[]
-local function shown(grants, possible)
+local function applicable(grants, privileges)
   return vim.tbl_filter(function(name)
-    return vim.list_contains(possible, name)
+    return vim.list_contains(privileges, name)
   end, grants)
 end
 
---- How wide `names` are once shortened, counting a `*` after every one so the
---- width holds whichever of them are held with grant option.
+--- Returns the width of `names` once shortened and joined by spaces. With
+--- `use_asterisk`, it counts a `*` after every name, so the width fits any of
+--- them held with grant option.
 ---@param names string[]
 ---@param shorten fun(name: string): string
----@param asterisk boolean
+---@param use_asterisk boolean
 ---@return integer
-local function width(names, shorten, asterisk)
+local function shortened_width(names, shorten, use_asterisk)
   local total = #names - 1
   for _, name in ipairs(names) do
-    total = total + #shorten(name) + (asterisk and 1 or 0)
+    total = total + #shorten(name) + (use_asterisk and 1 or 0)
   end
   return total
 end
 
+--- Returns the wider of two widths: the longest name in `grants` shortened by
+--- `shorten`, and the codes of all the privileges in `grants` that one kind of
+--- object can have.
 ---@param grants string[]
 ---@param shorten fun(name: string): string
----@param asterisk boolean
+---@param use_asterisk boolean
 ---@return integer
-local function column_width(grants, shorten, asterisk)
+local function column_width(grants, shorten, use_asterisk)
   local widest = 0
   for _, name in ipairs(grants) do
-    widest = math.max(widest, width({ name }, shorten, asterisk))
+    widest = math.max(widest, shortened_width({ name }, shorten, use_asterisk))
   end
-  for _, possible in pairs(POSSIBLE) do
-    local names = shown(grants, possible)
+  for _, kind_privileges in pairs(PRIVILEGES_BY_KIND) do
+    local names = applicable(grants, kind_privileges)
     if #names > 0 then
-      widest = math.max(widest, width(names, SHORTENINGS[#SHORTENINGS], asterisk))
+      widest = math.max(widest, shortened_width(names, SHORTENINGS[#SHORTENINGS], use_asterisk))
     end
   end
   return widest
 end
 
---- Which of `SHORTENINGS` a window `window_width` wide starts at.
+--- Returns the index in `SHORTENINGS` of the form that a window `window_width`
+--- wide starts at.
 ---@param levels dbtree.PrivilegeLevels
 ---@param window_width integer
 ---@return integer
@@ -163,7 +148,7 @@ local function level_for(levels, window_width)
 end
 
 ---@param config dbtree.PrivilegeColumn
----@return boolean asterisk
+---@return boolean use_asterisk
 ---@return dbtree.PrivilegeLevels levels
 local function read_config(config)
   if type(config.grants) ~= "table" or #config.grants == 0 then
@@ -195,20 +180,20 @@ end
 ---@param state neotree.State
 ---@return neotree.Render.Node[]
 M.cell = function(config, node, state)
-  local asterisk, levels = read_config(config)
+  local use_asterisk, levels = read_config(config)
   local level = level_for(levels, vim.api.nvim_win_get_width(state.winid))
-  local cell_width = column_width(config.grants, SHORTENINGS[level], asterisk)
+  local cell_width = column_width(config.grants, SHORTENINGS[level], use_asterisk)
   ---@type dbtree.GrantRow
   local row = node.extra.record
 
-  local names = shown(config.grants, possible_for(row.target))
+  local names = applicable(config.grants, privileges_for(row.target))
   if #names == 0 then
     return { { text = string.rep(" ", cell_width + 1) } }
   end
 
   local shorten = SHORTENINGS[#SHORTENINGS]
   for i = level, #SHORTENINGS do
-    if width(names, SHORTENINGS[i], asterisk) <= cell_width then
+    if shortened_width(names, SHORTENINGS[i], use_asterisk) <= cell_width then
       shorten = SHORTENINGS[i]
       break
     end
@@ -222,32 +207,33 @@ M.cell = function(config, node, state)
 
   local pieces = { { text = " " } }
   local content_width = 0
-  local function add(piece)
+  local function append(piece)
     table.insert(pieces, piece)
     content_width = content_width + #piece.text
   end
   for i, name in ipairs(names) do
     if i > 1 then
-      add({ text = " " })
+      append({ text = " " })
     end
     local privilege = held[name]
     local grantable = privilege ~= nil and privilege.grantable
-    local highlight = highlights.NOT_HELD
+    local highlight = highlights.PRIVILEGE_NOT_HELD
     if privilege then
-      highlight = (grantable and not asterisk) and highlights.GRANTABLE or highlights.PRIVILEGE
+      highlight = (grantable and not use_asterisk) and highlights.PRIVILEGE_GRANTABLE or highlights.PRIVILEGE
     end
-    if asterisk and grantable then
-      add({ text = shorten(name) .. "*", highlight = highlight })
+    if use_asterisk and grantable then
+      append({ text = shorten(name) .. "*", highlight = highlight })
     else
-      add({ text = shorten(name), highlight = highlight })
-      -- Every privilege's `*` has the same place on every row, so one without
-      -- it leaves the place blank.
-      if asterisk then
-        add({ text = " " })
+      append({ text = shorten(name), highlight = highlight })
+      -- Holds the place of the `*` that other rows show after this privilege.
+      if use_asterisk then
+        append({ text = " " })
       end
     end
   end
 
+  -- neo-tree places right-aligned cells end to end without measuring them, so
+  -- every cell is padded to its column's width.
   if content_width < cell_width then
     table.insert(pieces, { text = string.rep(" ", cell_width - content_width) })
   end

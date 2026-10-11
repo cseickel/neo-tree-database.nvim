@@ -1,10 +1,4 @@
---[[
-What a catalog holds, as tree items.
-
-One query hands back a whole catalog, so everything here is built from a
-document already in hand. A folder appears only when it would hold something,
-so a table without indexes offers nothing to open onto an empty list.
-]]
+--- Builds the tree items for what a catalog holds.
 
 local grants = require("neo-tree-database.grants")
 local items = require("neo-tree-database.items")
@@ -39,7 +33,7 @@ local M = {}
 ---@field name string
 ---@field kind "table"|"view"|"materialized_view"
 ---@field rows integer|nil
----@field size integer|nil Bytes on disk, with its indexes.
+---@field size integer|nil Bytes on disk, including its indexes.
 ---@field size_estimated boolean|nil
 ---@field definition string|nil
 ---@field columns dbtree.Column[]
@@ -112,8 +106,6 @@ function M.schemas(node, document)
   return vim.list_extend(result, grants.folder(node, grants.rows(grants.database_target(parent.catalog), document.grants)))
 end
 
---- The folders a schema shows, each holding the schema field it names, and
---- only the objects of one kind where it names a kind.
 local SCHEMA_FOLDERS = {
   { folder = "tables", label = "Tables", field = "relations", kind = "table" },
   { folder = "views", label = "Views", field = "relations", kind = "view" },
@@ -145,15 +137,15 @@ function M.schema_folders(node)
   local schema = parent.record
 
   local result = {}
-  for _, group in ipairs(SCHEMA_FOLDERS) do
-    local held = of_kind(schema[group.field] or {}, group.kind)
-    if #held > 0 then
+  for _, folder_spec in ipairs(SCHEMA_FOLDERS) do
+    local records = of_kind(schema[folder_spec.field] or {}, folder_spec.kind)
+    if #records > 0 then
       table.insert(
         result,
-        items.container(node.id .. "/@" .. group.folder, group.label, "folder", items.inherit(parent, {
+        items.container(node.id .. "/@" .. folder_spec.folder, folder_spec.label, "folder", items.inherit(parent, {
           kind = "folder",
-          folder = group.folder,
-          record = held,
+          folder = folder_spec.folder,
+          record = records,
         }))
       )
     end
@@ -180,9 +172,6 @@ function M.relations(node)
   return result
 end
 
---- Each part of a relation, named by the field holding it, the label its folder
---- shows, and the node type its leaves take, which is also the key their
---- renderer is configured under.
 local RELATION_PARTS = {
   { folder = "columns", label = "Columns", leaf = "column" },
   { folder = "indexes", label = "Indexes", leaf = "index" },
@@ -195,15 +184,15 @@ function M.relation_folders(node)
   local parent = node.extra
   local result = {}
   for _, part in ipairs(RELATION_PARTS) do
-    local held = parent.record[part.folder] or {}
-    if #held > 0 then
+    local records = parent.record[part.folder] or {}
+    if #records > 0 then
       table.insert(
         result,
         items.container(node.id .. "/@" .. part.folder, part.label, "folder", items.inherit(parent, {
           kind = "folder",
           folder = part.folder,
           leaf = part.leaf,
-          record = held,
+          record = records,
         }))
       )
     end
@@ -228,9 +217,8 @@ function M.relation_parts(node)
   return result
 end
 
---- The sequences in a Sequences folder. A sequence's only child is its Grants
---- folder, so it is a leaf where it has no grants, as everywhere in duckdb,
---- which keeps none.
+--- Returns the sequences in a Sequences folder. A sequence with no grants is a
+--- leaf, because its Grants folder is its only child.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
 function M.sequences(node)
@@ -242,13 +230,12 @@ function M.sequences(node)
       record = sequence,
       target = grants.sequence_target(node.extra.schema, sequence),
     })
-    local build = #(sequence.grants or {}) > 0 and items.container or items.leaf
-    table.insert(result, build(id, sequence.name, "sequence", extra))
+    local make_item = #(sequence.grants or {}) > 0 and items.container or items.leaf
+    table.insert(result, make_item(id, sequence.name, "sequence", extra))
   end
   return result
 end
 
---- The Grants folder of a sequence.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
 function M.sequence_grants(node)

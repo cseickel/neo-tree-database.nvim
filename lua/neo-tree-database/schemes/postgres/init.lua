@@ -1,20 +1,5 @@
---[[
-postgres.
-
-`pg_catalog` answers rather than `information_schema`, because `relkind` sorts
-tables, views, materialized views and partitioned tables in one pass, and
-because the `pg_get_*def` functions hand back the definition text the standard
-views do not carry.
-
-A connection reaches one database, so the catalog level lists the others on the
-same server and each one carries its own url. Nothing below a catalog crosses
-into another, which is what postgres allows rather than a choice made here.
-
-One catalog is one query, so an object the connected role cannot read fails the
-whole catalog rather than going missing from it. A permission error naming the
-object is the better of the two, because a tree quietly missing a table is a
-tree that cannot be trusted.
-]]
+--- Builds the psql requests for a server's databases and their contents, and the
+--- ddl of a postgres relation.
 
 local quote = require("neo-tree-database.quote")
 local queries = require("neo-tree-database.schemes.postgres.sql")
@@ -24,13 +9,12 @@ local M = {}
 
 M.quoting = quote.ANSI
 
---- psql prints the one value and nothing else: no alignment, no header, no
---- pager, and no psqlrc that could turn any of those back on. `commands` run in
---- order on one connection, and quiet mode keeps a SET from printing anything.
+--- Returns a request that runs `commands` in order on one psql connection.
 ---@param connection string
 ---@param commands string[]
 ---@return dbtree.Request
-local function invoke(connection, commands)
+local function request_for(connection, commands)
+  -- -X skips psqlrc, and -q keeps a SET from printing its command tag.
   local argv = { "psql", connection, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1" }
   for _, command in ipairs(commands) do
     vim.list_extend(argv, { "-c", command })
@@ -38,13 +22,13 @@ local function invoke(connection, commands)
   return { argv = argv }
 end
 
-local LOCK_TIMEOUT = "set lock_timeout = '5s'"
---- Verbose errors carry the SQLSTATE, and 55P03 is a lock timeout.
-local VERBOSE = "\\set VERBOSITY verbose"
-local LOCK_TIMED_OUT = "55P03"
+local SET_LOCK_TIMEOUT = "set lock_timeout = '5s'"
+-- psql shows an error's SQLSTATE only at verbose verbosity.
+local VERBOSE_ERRORS = "\\set VERBOSITY verbose"
+local LOCK_TIMEOUT_SQLSTATE = "55P03"
 
---- Each database on the server is its own connection, because postgres cannot
---- query across one.
+--- Returns the url of `catalog` on the server that `connection` reaches. postgres
+--- queries one database per connection.
 ---@param connection string
 ---@param catalog string
 ---@return string
@@ -55,29 +39,26 @@ end
 ---@param connection string
 ---@return dbtree.Request
 function M.catalogs(connection)
-  return invoke(connection, { queries.CATALOGS })
+  return request_for(connection, { queries.CATALOGS })
 end
 
---- The catalog is reached by connecting to it, so the query names no database
---- and carries nothing from the tree into sql.
----
---- Measuring sizes waits behind any table under an exclusive lock, so a
---- catalog that cannot get its locks in time is read again with the sizes
---- pg_class last recorded, which take none.
+--- Returns a request that reads `catalog` with sizes measured on disk. Measuring
+--- takes locks, so when it times out waiting for one, the request falls back to
+--- the sizes that pg_class last recorded.
 ---@param catalog_url string
 ---@param catalog string
 ---@return dbtree.Request
 function M.introspect(catalog_url, catalog)
-  local request = invoke(catalog_url, { VERBOSE, LOCK_TIMEOUT, queries.INTROSPECT })
+  local request = request_for(catalog_url, { VERBOSE_ERRORS, SET_LOCK_TIMEOUT, queries.INTROSPECT })
   request.fallback = {
-    error = LOCK_TIMED_OUT,
-    request = invoke(catalog_url, { LOCK_TIMEOUT, queries.INTROSPECT_ESTIMATED }),
+    error = LOCK_TIMEOUT_SQLSTATE,
+    request = request_for(catalog_url, { SET_LOCK_TIMEOUT, queries.INTROSPECT_ESTIMATED }),
   }
   return request
 end
 
---- The name db-query's catalog knows a relation by. The catalog is the
---- database the url connects to, so the name starts at the schema.
+--- Returns the name path that db-query's catalog knows a relation by. It starts
+--- at the schema, because db-query keeps one catalog per database.
 ---@param catalog string
 ---@param schema string
 ---@param relation string
@@ -86,13 +67,11 @@ function M.catalog_name(catalog, schema, relation)
   return { schema, relation }
 end
 
---- How a column states where its value comes from. An identity column and a
---- generated column both keep their expression where a default would go, and
---- writing that expression out as a DEFAULT would describe a column that
---- accepts writes when the real one does not.
+--- Returns the clause stating where `column`'s value comes from. postgres keeps a
+--- generated column's expression where a default goes.
 ---@param column dbtree.Column
 ---@return string
-local function column_source(column)
+local function value_source_clause(column)
   if column.generated == "s" then
     return " GENERATED ALWAYS AS (" .. (column.default or "") .. ") STORED"
   end
@@ -108,21 +87,21 @@ local function column_source(column)
   return ""
 end
 
---- How `column` reads inside a CREATE TABLE or after an ADD COLUMN.
+--- Returns `column` as it reads in a CREATE TABLE or after ADD COLUMN.
 ---@param column dbtree.Column
 ---@return string
 function M.column_definition(column)
-  local text = quote.identifier(column.name, M.quoting) .. " " .. (column.type or "")
-  text = text .. column_source(column)
+  local definition = quote.identifier(column.name, M.quoting) .. " " .. (column.type or "")
+  definition = definition .. value_source_clause(column)
   if not column.nullable then
-    text = text .. " NOT NULL"
+    definition = definition .. " NOT NULL"
   end
-  return text
+  return definition
 end
 
---- Postgres keeps no `CREATE TABLE` text, so a table's statement is rebuilt
---- from the columns and constraints the catalog fetch already returned. A view
---- carries its own definition and is handed back as it came.
+--- Returns the statements that create `relation`. A view comes back as its
+--- stored definition. A table is rebuilt from its columns, constraints and
+--- indexes, because postgres keeps no CREATE TABLE text.
 ---@param relation dbtree.Relation
 ---@param schema string
 ---@return string[]
@@ -131,14 +110,14 @@ function M.ddl(relation, schema)
     return vim.split(relation.definition, "\n", { plain = true })
   end
 
-  local parts = {}
+  local table_elements = {}
   for _, column in ipairs(relation.columns or {}) do
-    table.insert(parts, M.column_definition(column))
+    table.insert(table_elements, M.column_definition(column))
   end
   for _, constraint in ipairs(relation.constraints or {}) do
     if constraint.definition then
       table.insert(
-        parts,
+        table_elements,
         "CONSTRAINT "
           .. quote.identifier(constraint.name, M.quoting)
           .. " "
@@ -148,15 +127,14 @@ function M.ddl(relation, schema)
   end
 
   local lines = { "CREATE TABLE " .. quote.qualified(schema, relation.name, M.quoting) .. " (" }
-  for index, part in ipairs(parts) do
-    table.insert(lines, "    " .. part .. (index < #parts and "," or ""))
+  for position, element in ipairs(table_elements) do
+    table.insert(lines, "    " .. element .. (position < #table_elements and "," or ""))
   end
   table.insert(lines, ");")
 
-  -- The index behind a primary key or a unique constraint is already stated by
-  -- the constraint above, and repeating it as a CREATE INDEX would make the
-  -- statement fail against an empty database.
   for _, index in ipairs(relation.indexes or {}) do
+    -- The constraint above already creates the index behind a primary key or a
+    -- unique constraint.
     if index.definition and not index.owned_by_constraint then
       table.insert(lines, "")
       table.insert(lines, index.definition .. ";")

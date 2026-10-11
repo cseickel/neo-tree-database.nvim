@@ -1,23 +1,15 @@
---[[
-The queries postgres is asked: one per connection for its databases and roles,
-and one per database for everything that database holds. The catalog query
-comes in two forms, one measuring sizes on disk and one estimating them from
-pg_class without taking a lock.
-]]
+--- Builds the sql that lists a postgres server's databases and roles, and the sql
+--- that reads everything one database holds.
 
 local M = {}
 
---- The grants an acl holds, one entry per grantee, as sql to place where a
---- json value is expected. `acl` is the expression that reads the acl.
----
---- A grantee of 0 is PUBLIC, which has no role name, so its `grantee` is null
---- and the decoded entry has no `grantee` key at all.
----
---- aclexplode returns a row per grantor, and the same privilege granted by two
---- roles is one privilege here, held with grant option if either grant has it.
+--- Returns sql for a json list of the grants in the acl that the expression `acl`
+--- reads, one entry per grantee. PUBLIC is grantee 0 and gets a null `grantee`.
+--- aclexplode returns a row per grantor, so a privilege that two roles granted
+--- becomes one privilege, grantable when either grant is.
 ---@param acl string
 ---@return string
-local function grants(acl)
+local function grants_json(acl)
   return [[coalesce((
     select json_agg(json_build_object(
       'grantee', g.grantee,
@@ -39,24 +31,25 @@ local function grants(acl)
   ), '[]'::json)]]
 end
 
---- A null acl means the object still has the privileges postgres gives every
---- object of its kind, which `acldefault` spells out, so the owner shows as
---- holding them instead of the object showing no grants at all.
+--- Returns `grants_json` for `acl`, using the privileges that `acldefault` gives
+--- an object of `kind` owned by `owner` when `acl` is null. postgres keeps a
+--- null acl until a privilege on the object is first granted or revoked.
 ---@param acl string
 ---@param kind string The `acldefault` object type, such as `r` for a relation.
 ---@param owner string
 ---@return string
-local function grants_or_default(acl, kind, owner)
-  return grants(("coalesce(%s, acldefault('%s', %s))"):format(acl, kind, owner))
+local function grants_or_default_json(acl, kind, owner)
+  return grants_json(("coalesce(%s, acldefault('%s', %s))"):format(acl, kind, owner))
 end
 
---- An object an extension created, or a sequence behind an identity column.
---- Neither was written by the user, so neither is listed.
+--- Returns sql that is true when the object `oid` in the catalog `class` has a
+--- pg_depend row with one of `deptypes`. `e` marks an object an extension
+--- created, and `i` marks a sequence behind an identity column.
 ---@param class string
 ---@param oid string
 ---@param deptypes string
 ---@return string
-local function dependent(class, oid, deptypes)
+local function has_dependency(class, oid, deptypes)
   return ([[exists (
     select 1 from pg_depend dep
     where dep.classid = '%s'::regclass and dep.objid = %s and dep.deptype in (%s)
@@ -67,20 +60,19 @@ end
 ---@field total fun(oid: string): string Sql for the bytes of the relation, its toast and its indexes.
 ---@field estimated boolean
 
---- The sizes on disk. pg_total_relation_size takes a lock on every relation it
---- measures, so it waits behind any table under an exclusive lock.
+-- pg_total_relation_size takes a lock on each relation it measures.
 ---@type dbtree.SizeSql
-local EXACT = {
+local EXACT_SIZES = {
   total = function(oid)
     return ("pg_total_relation_size(%s)"):format(oid)
   end,
   estimated = false,
 }
 
---- The sizes vacuum and analyze last recorded in pg_class, read without
---- taking a lock. Neither one visits a sequence, which is always one page.
+-- Reads the page counts that vacuum and analyze last recorded in pg_class, which
+-- takes no lock. A sequence's relpages stays 0, so it counts as its one page.
 ---@type dbtree.SizeSql
-local ESTIMATED = {
+local ESTIMATED_SIZES = {
   total = function(oid)
     return ([[(
       select sum(case when part.relkind = 'S' then 1 else part.relpages end)::bigint
@@ -99,30 +91,28 @@ local ESTIMATED = {
   estimated = true,
 }
 
---- Returns the `size` key and value of a json object, with `size_estimated`
---- beside it when the size is an estimate.
+--- Returns the `size` key and value of a json object, followed by
+--- `size_estimated` when the size is an estimate.
 ---@param sizes dbtree.SizeSql
 ---@param expression string
 ---@return string
-local function size_pairs(sizes, expression)
+local function size_json_pairs(sizes, expression)
   if sizes.estimated then
     return "'size', " .. expression .. ", 'size_estimated', true"
   end
   return "'size', " .. expression
 end
 
---- Returns sql for the size of a relation. Postgres keeps no storage of its own
---- for a partitioned table or index, so its partitions are added up instead. A
---- view or a foreign table stores nothing and has no size.
----
---- The partitions are found through pg_inherits, because pg_partition_tree
---- locks every one of them.
+--- Returns the size json pairs for a relation. A partitioned table or index has
+--- no storage of its own, so its size is the sum of its partitions, and a view
+--- or a foreign table has no size. The partitions are found through
+--- pg_inherits, because pg_partition_tree locks each one.
 ---@param sizes dbtree.SizeSql
 ---@param oid string
 ---@param relkind string
 ---@return string
-local function stored(sizes, oid, relkind)
-  return size_pairs(sizes, ([[case
+local function relation_size_json(sizes, oid, relkind)
+  return size_json_pairs(sizes, ([[case
     when %s in ('v', 'f') then null
     when %s in ('p', 'I') then (
       with recursive tree(relid) as (
@@ -136,10 +126,9 @@ local function stored(sizes, oid, relkind)
   end]]):format(relkind, relkind, oid, sizes.total("tree.relid"), sizes.total(oid)))
 end
 
--- A role belongs to the whole server, so the roles come with the database list
--- rather than with each database. A role can be granted the same membership by
--- several grantors since postgres 16, which `distinct` folds back into one.
--- pg_database_size raises for a database the role cannot connect to.
+-- pg_database_size raises an error for a database the role cannot connect to.
+-- Since postgres 16 a role can hold the same membership from several grantors,
+-- so the membership lists use `distinct`.
 M.CATALOGS = [[
 select json_build_object(
   'catalogs', coalesce((
@@ -183,33 +172,33 @@ select json_build_object(
 )
 ]]
 
--- Several things here are not the obvious spelling, and each is deliberate.
--- reltuples is -1 until the table has been analyzed, which is not an estimate
--- of zero. An index column is read back through pg_get_indexdef rather than
--- joined to pg_attribute, because indkey holds 0 for an expression and the
--- join would silently drop it. contype 'n' is the not-null constraint row that
--- postgres 17 began storing, which the column list already reports. A column's
--- acl is read without a default, because a column has no privileges of its own
--- until one is granted on it. pg_get_functiondef raises on an aggregate, and
--- one aggregate would fail the whole query. A function's arguments are read
--- from proallargtypes, which holds output arguments too and is null when every
--- argument is an input, so proargtypes stands in for it then. A procedure has
--- no return, and the void postgres stores for one is not shown as one.
+--- Returns the sql that reads everything the connected database holds, with
+--- sizes from `sizes`. It relies on these postgres behaviors:
+--- - reltuples is -1 until the table is analyzed.
+--- - indkey holds 0 for an expression column, so index columns come from
+---   pg_get_indexdef.
+--- - Since postgres 17, each NOT NULL is also a constraint with contype `n`.
+--- - A column has no privileges of its own until one is granted on it, so its
+---   acl has no default.
+--- - pg_get_functiondef raises an error for an aggregate.
+--- - proallargtypes is null when every argument is an input, and proargtypes
+---   holds the same types then.
+--- - A procedure's prorettype is void.
 ---@param sizes dbtree.SizeSql
 ---@return string
-local function introspect(sizes)
+local function introspect_sql(sizes)
   return [[
 select json_build_object(
   'grants', (
-    select ]] .. grants_or_default("d.datacl", "d", "d.datdba") .. [[
+    select ]] .. grants_or_default_json("d.datacl", "d", "d.datdba") .. [[
     from pg_database d
     where d.datname = current_database()
   ),
   'schemas', coalesce((
   select json_agg(json_build_object(
     'name', n.nspname,
-    'grants', ]] .. grants_or_default("n.nspacl", "n", "n.nspowner") .. [[,
-    ]] .. size_pairs(sizes, [[(
+    'grants', ]] .. grants_or_default_json("n.nspacl", "n", "n.nspowner") .. [[,
+    ]] .. size_json_pairs(sizes, [[(
       select coalesce(sum(]] .. sizes.total("c.oid") .. [[), 0)::bigint
       from pg_class c
       where c.relnamespace = n.oid and c.relkind in ('r', 'm', 'S')
@@ -223,7 +212,7 @@ select json_build_object(
                   else 'table'
                 end,
         'rows', case when c.reltuples < 0 then null else c.reltuples::bigint end,
-        ]] .. stored(sizes, "c.oid", "c.relkind") .. [[,
+        ]] .. relation_size_json(sizes, "c.oid", "c.relkind") .. [[,
         'definition', case when c.relkind in ('v', 'm')
                         then 'CREATE '
                              || case c.relkind when 'm' then 'MATERIALIZED ' else '' end
@@ -231,7 +220,7 @@ select json_build_object(
                              || ' AS ' || pg_get_viewdef(c.oid, true)
                         else null
                       end,
-        'grants', ]] .. grants_or_default("c.relacl", "r", "c.relowner") .. [[,
+        'grants', ]] .. grants_or_default_json("c.relacl", "r", "c.relowner") .. [[,
         'columns', coalesce((
           select json_agg(json_build_object(
             'name', a.attname,
@@ -241,7 +230,7 @@ select json_build_object(
             'identity', nullif(a.attidentity, ''),
             'generated', nullif(a.attgenerated, ''),
             'position', a.attnum,
-            'grants', ]] .. grants("a.attacl") .. [[
+            'grants', ]] .. grants_json("a.attacl") .. [[
           ) order by a.attnum)
           from pg_attribute a
           left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
@@ -251,7 +240,7 @@ select json_build_object(
           select json_agg(json_build_object(
             'name', ic.relname,
             'unique', i.indisunique,
-            ]] .. stored(sizes, "i.indexrelid", "ic.relkind") .. [[,
+            ]] .. relation_size_json(sizes, "i.indexrelid", "ic.relkind") .. [[,
             'definition', pg_get_indexdef(i.indexrelid),
             'owned_by_constraint', exists (
               select 1 from pg_constraint pc where pc.conindid = i.indexrelid
@@ -300,13 +289,13 @@ select json_build_object(
                       || ' CACHE ' || s.seqcache
                       || case when s.seqcycle then ' CYCLE' else ' NO CYCLE' end
                       || ';',
-        ]] .. stored(sizes, "c.oid", "c.relkind") .. [[,
-        'grants', ]] .. grants_or_default("c.relacl", "s", "c.relowner") .. [[
+        ]] .. relation_size_json(sizes, "c.oid", "c.relkind") .. [[,
+        'grants', ]] .. grants_or_default_json("c.relacl", "s", "c.relowner") .. [[
       ) order by c.relname)
       from pg_class c
       join pg_sequence s on s.seqrelid = c.oid
       where c.relnamespace = n.oid
-        and not ]] .. dependent("pg_class", "c.oid", "'e', 'i'") .. [[
+        and not ]] .. has_dependency("pg_class", "c.oid", "'e', 'i'") .. [[
     ), '[]'::json),
     'functions', coalesce((
       select json_agg(json_build_object(
@@ -350,11 +339,11 @@ select json_build_object(
           )
         ) end,
         'definition', case when p.prokind <> 'a' then rtrim(pg_get_functiondef(p.oid), E'\n') || ';' end,
-        'grants', ]] .. grants_or_default("p.proacl", "f", "p.proowner") .. [[
+        'grants', ]] .. grants_or_default_json("p.proacl", "f", "p.proowner") .. [[
       ) order by p.proname, pg_get_function_identity_arguments(p.oid))
       from pg_proc p
       where p.pronamespace = n.oid
-        and not ]] .. dependent("pg_proc", "p.oid", "'e'") .. [[
+        and not ]] .. has_dependency("pg_proc", "p.oid", "'e'") .. [[
     ), '[]'::json)
   ) order by n.nspname)
   from pg_namespace n
@@ -365,7 +354,7 @@ select json_build_object(
 ]]
 end
 
-M.INTROSPECT = introspect(EXACT)
-M.INTROSPECT_ESTIMATED = introspect(ESTIMATED)
+M.INTROSPECT = introspect_sql(EXACT_SIZES)
+M.INTROSPECT_ESTIMATED = introspect_sql(ESTIMATED_SIZES)
 
 return M

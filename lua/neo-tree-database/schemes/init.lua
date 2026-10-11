@@ -1,19 +1,11 @@
---[[
-Choosing what speaks a url.
-
-Each scheme module owns everything its database does differently: how its client
-is invoked, what sql lists its catalogs, what sql describes one, and how its
-ddl is produced. Adding a database is adding a module and a line here, and
-touches nothing else.
-]]
+--- Picks the scheme module that handles a connection url.
 
 local url = require("neo-tree-database.url")
 
 local M = {}
 
---- Both spellings of the postgres url scheme reach the same module, because
---- vim-dadbod accepts either and a connections file may hold either.
-local MODULES = {
+-- vim-dadbod accepts both `postgres` and `postgresql` urls.
+local MODULE_BY_URL_SCHEME = {
   duckdb = "duckdb",
   postgres = "postgres",
   postgresql = "postgres",
@@ -28,11 +20,8 @@ local MODULES = {
 ---@field column_definition fun(column: dbtree.Column): string
 ---@field catalog_name fun(catalog: string, schema: string, relation: string): string[]
 
---- The module that speaks `connection`, nil when nothing here does.
----
---- A node above a connection carries no url, and asking what speaks for it is
---- how a command written for one node reaches the root, so a missing url is
---- answered rather than raised.
+--- Returns the scheme module for the url `connection`, or nil when `connection`
+--- is nil or no module handles its scheme.
 ---@param connection string|nil
 ---@return dbtree.Scheme|nil
 function M.of(connection)
@@ -40,20 +29,19 @@ function M.of(connection)
     return nil
   end
 
-  local name = MODULES[url.scheme(connection)]
-  if not name then
+  local module_name = MODULE_BY_URL_SCHEME[url.scheme(connection)]
+  if not module_name then
     return nil
   end
-  return require("neo-tree-database.schemes." .. name)
+  return require("neo-tree-database.schemes." .. module_name)
 end
 
---- Every url scheme the tree can browse, sorted, for the message a connection
---- it cannot browse renders.
+--- Returns the url schemes the tree can browse, sorted.
 ---@return string[]
-function M.supported()
-  local names = vim.tbl_keys(MODULES)
-  table.sort(names)
-  return names
+function M.supported_schemes()
+  local url_schemes = vim.tbl_keys(MODULE_BY_URL_SCHEME)
+  table.sort(url_schemes)
+  return url_schemes
 end
 
 return M

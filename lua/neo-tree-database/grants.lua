@@ -1,23 +1,5 @@
---[[
-Who has been granted what.
-
-A grant is shown from both ends. Under an object, a Grants folder lists each
-role granted something on it. Under a role, each database lists every object
-the role was granted something on. Both are read from the catalog document the
-database itself shows, so each database is asked once for both.
-
-Only direct grants are shown. Access a role has through another role is found
-by following its Member of folder to that role.
-
-Under a role, a function with several overloads is one row when the role holds
-the same privileges on every overload, and otherwise one row per overload it
-holds anything on, numbered as the tree numbers them.
-
-The role side sees only what the catalog document holds: the database, its
-schemas, and the tables, views, sequences and functions the tree lists. A grant
-on a partition, on an object an extension created, on anything in pg_catalog,
-or on a type, language or foreign server is not shown.
-]]
+--- Builds the tree items that show grants, both under each object and under each
+--- role.
 
 local items = require("neo-tree-database.items")
 
@@ -25,10 +7,10 @@ local M = {}
 
 ---@class dbtree.Privilege
 ---@field name string As postgres spells it, such as `SELECT` or `TEMPORARY`.
----@field grantable boolean Whether the grantee may grant it on.
+---@field grantable boolean Whether the grantee may grant it to other roles.
 
 ---@class dbtree.Grant
----@field grantee string|nil The role granted to, nil for PUBLIC.
+---@field grantee string|nil Nil for PUBLIC.
 ---@field privileges dbtree.Privilege[]
 
 ---@class dbtree.GrantTarget
@@ -36,7 +18,7 @@ local M = {}
 ---@field name string
 ---@field schema string|nil Nil for a database or a schema.
 ---@field arguments string[]|nil For a function, the argument types of each overload the grant is on.
----@field overload integer|nil The overload's number, where the grant is on one of several.
+---@field overload integer|nil The overload's number, when the grant is on one of several overloads.
 ---@field column string|nil Set for a grant on one column of a relation.
 
 ---@class dbtree.GrantRow
@@ -69,8 +51,8 @@ function M.sequence_target(schema, sequence)
   return { kind = "sequence", schema = schema, name = sequence.name }
 end
 
---- The target of a grant on `routine`. `overload` is its number among the
---- overloads of its name, and nil where it has none.
+--- Returns the target of a grant on `routine`. `overload` is the routine's
+--- number among the overloads of its name, and nil when the name has only one.
 ---@param schema string
 ---@param routine dbtree.Routine
 ---@param overload integer|nil
@@ -85,12 +67,12 @@ function M.routine_target(schema, routine, overload)
   }
 end
 
---- Whether every one of `overloads` grants `grant`'s grantee the same
---- privileges as `grant` does.
+--- Returns whether every routine in `overloads` gives `grant`'s grantee the same
+--- privileges that `grant` does.
 ---@param overloads dbtree.Routine[]
 ---@param grant dbtree.Grant
 ---@return boolean
-local function granted_on_each(overloads, grant)
+local function same_on_every_overload(overloads, grant)
   for _, routine in ipairs(overloads) do
     local same = vim.iter(routine.grants or {}):any(function(other)
       return other.grantee == grant.grantee and vim.deep_equal(other.privileges, grant.privileges)
@@ -102,9 +84,9 @@ local function granted_on_each(overloads, grant)
   return true
 end
 
---- The grants on `overloads`, every overload of one function. A grantee holding
---- the same privileges on each overload gets one row naming the function, and
---- every other grant gets a row naming its overload.
+--- Returns the grant rows for `overloads`, the overloads of one function. A
+--- grantee that holds the same privileges on every overload gets one row for the
+--- function, and each other grant gets a row for its overload.
 ---@param schema string
 ---@param overloads dbtree.Routine[]
 ---@return dbtree.GrantRow[]
@@ -113,9 +95,9 @@ local function routine_rows(schema, overloads)
     return M.rows(M.routine_target(schema, overloads[1]), overloads[1].grants)
   end
 
-  local whole = M.routine_target(schema, overloads[1])
-  if whole.arguments then
-    whole.arguments = vim.tbl_map(function(routine)
+  local function_target = M.routine_target(schema, overloads[1])
+  if function_target.arguments then
+    function_target.arguments = vim.tbl_map(function(routine)
       return routine.arguments
     end, overloads)
   end
@@ -123,18 +105,17 @@ local function routine_rows(schema, overloads)
   local rows = {}
   for number, routine in ipairs(overloads) do
     for _, grant in ipairs(routine.grants or {}) do
-      if not granted_on_each(overloads, grant) then
+      if not same_on_every_overload(overloads, grant) then
         table.insert(rows, { target = M.routine_target(schema, routine, number), grant = grant })
       elseif number == 1 then
-        table.insert(rows, { target = whole, grant = grant })
+        table.insert(rows, { target = function_target, grant = grant })
       end
     end
   end
   return rows
 end
 
---- Each grant in `list` paired with `target`. `list` is nil where the database
---- keeps no grants.
+--- Returns a row pairing `target` with each grant in `list`.
 ---@param target dbtree.GrantTarget
 ---@param list dbtree.Grant[]|nil
 ---@return dbtree.GrantRow[]
@@ -146,7 +127,7 @@ function M.rows(target, list)
   return rows
 end
 
---- The grants on `relation` and on each of its columns.
+--- Returns the grant rows for `relation` and for each of its columns.
 ---@param schema string
 ---@param relation dbtree.Relation
 ---@return dbtree.GrantRow[]
@@ -160,7 +141,7 @@ function M.relation_rows(schema, relation)
   return rows
 end
 
---- The Grants folder under `node`, or nothing when `rows` is empty.
+--- Returns the Grants folder for `node`, or an empty list when `rows` is empty.
 ---@param node dbtree.Item|NuiTree.Node
 ---@param rows dbtree.GrantRow[]
 ---@return dbtree.Item[]
@@ -178,10 +159,10 @@ function M.folder(node, rows)
   }
 end
 
---- `...` as id segments joined by `/`, stopping at the first nil.
+--- Returns the arguments up to the first nil as id segments joined by `/`.
 ---@param ... string|nil
 ---@return string
-local function segments(...)
+local function id_path(...)
   local parts = {}
   for _, part in ipairs({ ... }) do
     table.insert(parts, items.segment(part))
@@ -189,11 +170,11 @@ local function segments(...)
   return table.concat(parts, "/")
 end
 
---- The rows of an object's Grants folder, each named by its grantee, such as
---- `bob`, or `bob (email)` for a grant on one column.
+--- Returns the items in an object's Grants folder, each named by its grantee,
+--- such as `bob`, or `bob (email)` for a grant on one column.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.grantees(node)
+function M.grantee_items(node)
   local result = {}
   for _, row in ipairs(node.extra.record) do
     local grantee = row.grant.grantee
@@ -209,7 +190,7 @@ function M.grantees(node)
   return result
 end
 
---- The object a grant is on, as a row on the role side names it, such as
+--- Returns the name of a grant's object as a row under a role shows it, such as
 --- `public.orders`, `public.orders.email` for a grant on one column, or
 --- `public.total (2)` for a grant on one overload of several.
 ---@param target dbtree.GrantTarget
@@ -225,7 +206,6 @@ function M.object_name(target)
   return target.column and (name .. "." .. target.column) or name
 end
 
---- Every grant `document` holds, on any object in it.
 ---@param catalog string
 ---@param document dbtree.Catalog
 ---@return dbtree.GrantRow[]
@@ -239,41 +219,42 @@ local function catalog_rows(catalog, document)
     for _, sequence in ipairs(schema.sequences or {}) do
       vim.list_extend(rows, M.rows(M.sequence_target(schema.name, sequence), sequence.grants))
     end
-    for _, overloads in ipairs(items.overloads(schema.functions or {})) do
+    for _, overloads in ipairs(items.group_overloads(schema.functions or {})) do
       vim.list_extend(rows, routine_rows(schema.name, overloads))
     end
   end
   return rows
 end
 
---- What `grantee` was granted in `document`. A nil `grantee` is PUBLIC.
+--- Returns the grant rows in `document` whose grantee is `grantee`, where nil
+--- means PUBLIC.
 ---@param catalog string
 ---@param document dbtree.Catalog
 ---@param grantee string|nil
 ---@return dbtree.GrantRow[]
 function M.held_rows(catalog, document, grantee)
-  local held = {}
+  local held_rows = {}
   for _, row in ipairs(catalog_rows(catalog, document)) do
     if row.grant.grantee == grantee then
-      table.insert(held, row)
+      table.insert(held_rows, row)
     end
   end
-  return held
+  return held_rows
 end
 
---- What the role `node` stands for was granted in its catalog, each row named
---- by the object it grants on. `node.extra.grantee` is nil for PUBLIC.
+--- Returns the items under a role's catalog node, one per object that the role
+--- was granted something on. `node.extra.grantee` is nil for PUBLIC.
 ---@param node dbtree.Item|NuiTree.Node
 ---@param document dbtree.Catalog
 ---@return dbtree.Item[]
-function M.held(node, document)
+function M.held_items(node, document)
   local extra = node.extra
   local result = {}
   for _, row in ipairs(M.held_rows(extra.catalog, document, extra.grantee)) do
     local target = row.target
     local id = node.id
       .. "/"
-      .. segments(target.kind, target.schema or "", target.name, tostring(target.overload or ""), target.column)
+      .. id_path(target.kind, target.schema or "", target.name, tostring(target.overload or ""), target.column)
     table.insert(
       result,
       items.leaf(id, M.object_name(target), "grant", items.inherit(extra, { kind = "grant", record = row }))

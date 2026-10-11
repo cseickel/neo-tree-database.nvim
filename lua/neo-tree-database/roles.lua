@@ -1,17 +1,4 @@
---[[
-The roles on a server, as tree items.
-
-A role belongs to the whole server, so the Roles folder sits under the
-connection beside the catalogs, and is built from the same answer that lists
-them. A role opens onto the roles it is a member of, the roles that are members
-of it, and its grants in each database it holds any in. A role under Member of or Members opens
-the same way, so a chain of memberships is read in place. Postgres refuses a
-circular membership, so the nesting always ends.
-
-The roles postgres predefines, named `pg_*`, are left out of the list and still
-shown where a role is a member of one. PUBLIC is not a role, but every role
-holds what is granted to it, so it is listed with its grants alone.
-]]
+--- Builds the tree items for the roles on a server and the grants each role holds.
 
 local grants = require("neo-tree-database.grants")
 local items = require("neo-tree-database.items")
@@ -26,19 +13,19 @@ local M = {}
 
 ---@class dbtree.ListedCatalog
 ---@field name string
----@field size integer|nil Bytes on disk, nil where the database cannot tell.
+---@field size integer|nil Bytes on disk, nil when the database cannot report it.
 
 ---@class dbtree.Server
 ---@field catalogs dbtree.ListedCatalog[]
----@field roles dbtree.Role[]|nil Nil where the database has no roles.
+---@field roles dbtree.Role[]|nil Nil when the database has no roles.
 
----@class dbtree.Roles What every node under Roles carries.
+---@class dbtree.Roles The role lookup that every node under Roles carries.
 ---@field by_name table<string, dbtree.Role>
 ---@field catalogs dbtree.ListedCatalog[]
 ---@field catalog_url fun(connection: string, catalog: string): string
 
---- The Roles folder under the connection `node`, or nothing where `server`
---- has no roles.
+--- Returns the Roles folder under the connection `node`, or an empty list when
+--- `server` has no roles.
 ---@param node dbtree.Item|NuiTree.Node
 ---@param server dbtree.Server
 ---@param catalog_url fun(connection: string, catalog: string): string
@@ -80,12 +67,13 @@ local function role_item(node, role)
   })
 end
 
---- The roles in the Roles folder `node`, then PUBLIC.
+--- Returns the roles in the Roles folder `node`, followed by PUBLIC.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.listed(node)
+function M.folder_roles(node)
   local result = {}
   for _, role in ipairs(node.extra.record) do
+    -- postgres predefines the roles named `pg_*`.
     if not vim.startswith(role.name, "pg_") then
       table.insert(result, role_item(node, role))
     end
@@ -102,10 +90,9 @@ function M.listed(node)
   return result
 end
 
---- The roles named in a Member of or Members folder.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.named(node)
+function M.membership_roles(node)
   local result = {}
   for _, name in ipairs(node.extra.record) do
     table.insert(result, role_item(node, node.extra.roles.by_name[name]))
@@ -129,13 +116,11 @@ local function folder_item(node, folder, label, fields)
   }, fields))
 end
 
---- What a role or PUBLIC opens onto. PUBLIC has no memberships.
----
---- The Grants folder is built from every database's document, because which
---- databases the role holds anything in is known only once each has been read.
+--- Returns the folders that a role or PUBLIC expands to: Member of, Members, and
+--- Grants.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.parts(node)
+function M.role_children(node)
   local role = node.extra.record
   local roles = node.extra.roles
   local result = {}
@@ -158,20 +143,18 @@ function M.parts(node)
   return result
 end
 
---- The databases in a role's Grants folder that the role holds something in.
----
---- A database whose document could not be read is listed too, because whether
---- the role holds anything there is not known. Opening it asks again, and shows
---- why it failed.
+--- Returns the databases in a role's Grants folder where the role holds
+--- something. A database whose document could not be read is listed too, so
+--- expanding it queries the database again and shows the error.
 ---@param node dbtree.Item|NuiTree.Node
----@param read fun(id: string): dbtree.Catalog|nil
+---@param cached_document fun(id: string): dbtree.Catalog|nil
 ---@return dbtree.Item[]
-function M.catalogs(node, read)
+function M.grant_catalogs(node, cached_document)
   local extra = node.extra
   local result = {}
   for _, document in ipairs(extra.documents) do
-    local held = read(document.id)
-    if not held or #grants.held_rows(document.catalog, held, extra.grantee) > 0 then
+    local catalog = cached_document(document.id)
+    if not catalog or #grants.held_rows(document.catalog, catalog, extra.grantee) > 0 then
       table.insert(
         result,
         items.container(node.id .. "/" .. items.segment(document.catalog), document.catalog, "grant_catalog", {

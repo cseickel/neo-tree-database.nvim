@@ -1,19 +1,11 @@
---[[
-The functions a schema holds, as tree items.
-
-A function is listed once by its name, so no row spends its width on a list of
-argument types. Where the name has several overloads, it opens onto one node
-per overload, numbered in the order the catalog lists them. Each overload, or
-the function itself where it has one, opens onto its arguments, what it
-returns, and its grants.
-]]
+--- Builds the tree items for the functions a schema holds.
 
 local grants = require("neo-tree-database.grants")
 local items = require("neo-tree-database.items")
 
 local M = {}
 
----@class dbtree.Field A named, typed slot in what a function takes or returns.
+---@class dbtree.Field An argument or a returned column of a function.
 ---@field name string|nil Nil for an argument declared without a name.
 ---@field type string|nil Nil for a duckdb macro parameter declared without a type.
 ---@field default string|nil
@@ -23,19 +15,19 @@ local M = {}
 
 ---@class dbtree.Return
 ---@field type string
----@field set boolean Whether it returns a SETOF the type.
----@field columns dbtree.Field[]|nil The type's columns, where it is a table or a composite type.
+---@field set boolean Whether it returns SETOF the type.
+---@field columns dbtree.Field[]|nil The type's columns, when it is a table or a composite type.
 
 ---@class dbtree.Routine
 ---@field name string
 ---@field kind "function"|"procedure"|"aggregate"|"macro"|"table_macro"
----@field arguments string|nil postgres's argument types, which tell overloads apart.
+---@field arguments string|nil postgres's list of argument types, which tells overloads apart.
 ---@field args dbtree.Argument[] Every argument, in the order declared.
----@field returns dbtree.Return|nil Nil where the function declares no return, as a procedure or a macro.
+---@field returns dbtree.Return|nil Nil when the function declares no return, as for a procedure or a macro.
 ---@field definition string|nil
 ---@field grants dbtree.Grant[]|nil
 
----@class dbtree.Labelled A field as its row names it.
+---@class dbtree.Labelled A field with the name that its row shows.
 ---@field name string
 ---@field field dbtree.Field
 
@@ -43,25 +35,25 @@ local M = {}
 ---@field text string
 ---@field fields dbtree.Labelled[]
 
-local PREFIX = { inout = "INOUT ", variadic = "VARIADIC " }
+local MODE_PREFIX = { inout = "INOUT ", variadic = "VARIADIC " }
 
---- The arguments a call to `routine` passes. One declared without a name is
---- named as the function's body refers to it, such as `$1`.
+--- Returns the arguments that a call to `routine` passes. An argument declared
+--- without a name is labelled by its position, such as `$1`.
 ---@param routine dbtree.Routine
 ---@return dbtree.Labelled[]
 function M.inputs(routine)
   local result = {}
   for position, arg in ipairs(routine.args) do
     if arg.mode == "in" or arg.mode == "inout" or arg.mode == "variadic" then
-      table.insert(result, { name = (PREFIX[arg.mode] or "") .. (arg.name or ("$" .. position)), field = arg })
+      table.insert(result, { name = (MODE_PREFIX[arg.mode] or "") .. (arg.name or ("$" .. position)), field = arg })
     end
   end
   return result
 end
 
---- The output arguments of `routine`, which are the columns of what it
---- returns. One declared without a name is named as postgres names the column
---- it returns, such as `column1`.
+--- Returns the output arguments of `routine`. An argument declared without a
+--- name is labelled `column1`, `column2` and so on, as postgres names the columns
+--- it returns.
 ---@param routine dbtree.Routine
 ---@return dbtree.Labelled[]
 local function outputs(routine)
@@ -74,15 +66,14 @@ local function outputs(routine)
   return result
 end
 
---- What `routine` returns, or nil where it declares nothing.
----
---- Output arguments are the columns of what it returns. They make a table on a
---- procedure, when there are several of them, or when any is declared in
---- RETURNS TABLE. A function's single OUT argument makes a value of its own
---- type, which is the type postgres records as the return.
+--- Returns what the return row of `routine` shows, or nil when it declares no
+--- return. Output arguments make a TABLE on a procedure, when there are several
+--- of them, or when any is declared in RETURNS TABLE. A function's single OUT
+--- argument makes a value of its own type, which postgres records as the return
+--- type.
 ---@param routine dbtree.Routine
 ---@return dbtree.Result|nil
-local function result_of(routine)
+local function return_of(routine)
   local columns = outputs(routine)
   local returns = routine.returns
   if not returns and #columns == 0 then
@@ -117,19 +108,19 @@ local function routine_item(node, id, name, routine, overload)
     overload = overload,
     target = grants.routine_target(node.extra.schema, routine, overload),
   })
-  local has_parts = #M.inputs(routine) > 0 or result_of(routine) ~= nil or #(routine.grants or {}) > 0
-  if has_parts then
+  local has_children = #M.inputs(routine) > 0 or return_of(routine) ~= nil or #(routine.grants or {}) > 0
+  if has_children then
     return items.container(id, name, "routine", extra)
   end
   return items.leaf(id, name, "routine", extra)
 end
 
---- The functions in a folder of one kind, each listed once by its name.
+--- Returns the functions in a folder of one kind, one item per name.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.names(node)
+function M.folder_routines(node)
   local result = {}
-  for _, overloads in ipairs(items.overloads(node.extra.record)) do
+  for _, overloads in ipairs(items.group_overloads(node.extra.record)) do
     local name = overloads[1].name
     local id = node.id .. "/" .. items.segment(name)
     if #overloads == 1 then
@@ -149,7 +140,7 @@ end
 
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.overloads(node)
+function M.overload_items(node)
   local result = {}
   for number, routine in ipairs(node.extra.record) do
     table.insert(result, routine_item(node, node.id .. "/" .. number, "overload " .. number, routine, number))
@@ -157,10 +148,10 @@ function M.overloads(node)
   return result
 end
 
---- A function's arguments, what it returns, and its grants.
+--- Returns the Args folder, the return row, and the Grants folder of a function.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.parts(node)
+function M.routine_children(node)
   local extra = node.extra
   local routine = extra.record
   local result = {}
@@ -177,12 +168,12 @@ function M.parts(node)
     )
   end
 
-  local returned = result_of(routine)
-  if returned then
+  local return_row = return_of(routine)
+  if return_row then
     local id = node.id .. "/@return"
-    local return_extra = items.inherit(extra, { kind = "return", record = returned })
-    local build = #returned.fields > 0 and items.container or items.leaf
-    table.insert(result, build(id, "return", "return", return_extra))
+    local return_extra = items.inherit(extra, { kind = "return", record = return_row })
+    local make_item = #return_row.fields > 0 and items.container or items.leaf
+    table.insert(result, make_item(id, "return", "return", return_extra))
   end
 
   return vim.list_extend(result, grants.folder(node, grants.rows(extra.target, routine.grants)))
@@ -205,17 +196,15 @@ local function field_items(node, fields)
   return result
 end
 
---- The rows of a function's Args folder.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.arguments(node)
+function M.argument_items(node)
   return field_items(node, node.extra.record)
 end
 
---- The columns a function's return row opens onto.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
-function M.returned(node)
+function M.return_columns(node)
   return field_items(node, node.extra.record.fields)
 end
 

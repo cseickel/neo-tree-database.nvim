@@ -1,36 +1,27 @@
-local utils = require("neo-tree.utils")
---[[
-Opening sql somewhere it can be run.
+--- Opens sql in a new scratch buffer connected to the database it was written for.
 
-This plugin runs nothing, so a statement leaves it through here: a new buffer
-holding the sql, with the connection set the way vim-dadbod expects to find it.
-What happens to that buffer afterwards is the user's business, and a config
-that wants a different window or a different naming replaces this function.
-]]
+local utils = require("neo-tree.utils")
 
 local M = {}
 
 ---@class dbtree.Scratch
 ---@field state neotree.State
----@field url string The connection the statement was written against.
+---@field url string The url of the connection the statement was written for.
 ---@field lines string[]
----@field title string What the statement describes, for a buffer name.
+---@field title string The buffer's name, without `.sql`.
 
---- Opens `spec` in a split below.
----
---- The connection is set after the filetype rather than before, because a
---- config with an autocmd on the sql filetype is free to assign `b:db` itself,
---- and the connection the user asked for is the one that should win.
 ---@param spec dbtree.Scratch
 function M.open(spec)
-  local name = spec.title .. ".sql"
+  local buffer_name = spec.title .. ".sql"
   local buffer = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buffer, 0, -1, false, spec.lines)
-  vim.api.nvim_buf_set_name(buffer, name)
+  vim.api.nvim_buf_set_name(buffer, buffer_name)
   vim.bo[buffer].filetype = "sql"
+  -- Set after the filetype, so it replaces any `b:db` that a sql filetype
+  -- autocmd assigns.
   vim.b[buffer].db = spec.url
   vim.bo[buffer].modified = false
-  utils.open_file(spec.state, name, nil, buffer)
+  utils.open_file(spec.state, buffer_name, nil, buffer)
 end
 
 return M

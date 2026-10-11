@@ -1,14 +1,4 @@
---[[
-The connections the tree starts from.
-
-vim-dadbod-ui keeps its connections in a json file, and this plugin reads that
-same file rather than introducing a second list, so a config that already names
-its databases needs no new configuration. `g:dbs` is read too, because that is
-where vim-dadbod itself looks.
-
-Nothing here writes. A connection is added by editing the file, which is how
-that file was already being maintained.
-]]
+--- Lists the connections that the tree starts from.
 
 local M = {}
 
@@ -16,18 +6,18 @@ local M = {}
 ---@field name string
 ---@field url string
 
---- The file vim-dadbod-ui reads, wherever the user has pointed it.
+--- Returns the path of the connections file that vim-dadbod-ui reads.
 ---@return string
 local function connections_path()
-  local location = vim.g.db_ui_save_location or "~/.local/share/db_ui"
-  return vim.fn.expand(location) .. "/connections.json"
+  local save_location = vim.g.db_ui_save_location or "~/.local/share/db_ui"
+  return vim.fn.expand(save_location) .. "/connections.json"
 end
 
---- Appends every well-formed entry of `entries` to `into`, skipping any that
---- does not name both a connection and a url.
+--- Appends to `into` each entry of `entries` that has a string `name` and a
+--- string `url`.
 ---@param into dbtree.Connection[]
 ---@param entries table
-local function collect(into, entries)
+local function append_valid(into, entries)
   for _, entry in ipairs(entries) do
     if type(entry) == "table" and type(entry.name) == "string" and type(entry.url) == "string" then
       table.insert(into, { name = entry.name, url = entry.url })
@@ -37,14 +27,14 @@ end
 
 ---@return dbtree.Connection[] connections
 ---@return string|nil err
-local function from_file()
+local function from_connections_file()
   local path = connections_path()
   if vim.fn.filereadable(path) == 0 then
     return {}, nil
   end
 
-  local read, lines = pcall(vim.fn.readfile, path)
-  if not read then
+  local was_read, lines = pcall(vim.fn.readfile, path)
+  if not was_read then
     return {}, "could not read " .. path
   end
 
@@ -54,14 +44,14 @@ local function from_file()
   end
 
   local connections = {}
-  collect(connections, entries)
+  append_valid(connections, entries)
   return connections, nil
 end
 
---- `g:dbs` is written either as a list of name and url pairs or as a table of
---- name to url, and vim-dadbod reads both, so both are read here.
+--- Returns the connections in `g:dbs`, which vim-dadbod accepts either as a list
+--- of `{ name, url }` entries or as a table of name to url.
 ---@return dbtree.Connection[]
-local function from_global()
+local function from_g_dbs()
   local dbs = vim.g.dbs
   if type(dbs) ~= "table" then
     return {}
@@ -69,7 +59,7 @@ local function from_global()
 
   local connections = {}
   if dbs[1] ~= nil then
-    collect(connections, dbs)
+    append_valid(connections, dbs)
   else
     for name, url in pairs(dbs) do
       if type(name) == "string" and type(url) == "string" then
@@ -83,27 +73,20 @@ local function from_global()
   return connections
 end
 
---- Every connection the tree offers.
----
---- `configured` replaces both other sources when the user supplies one, as a
---- list or as a function returning one. Configuring it and getting back
---- something that is not a list is an error rather than a reason to read the
---- file, because falling back would answer with a list the user did not ask
---- for and gave no sign of wanting.
----
---- Otherwise a name already taken is skipped, so the file wins over `g:dbs` and
---- neither can hide the other's entries behind a duplicate.
+--- Returns the connections in `configured` when it is set, as a list or as a
+--- function that returns one. Otherwise returns the connections file's entries,
+--- followed by each `g:dbs` entry whose name the file does not already use.
 ---@param configured dbtree.Connection[]|fun(): dbtree.Connection[]|nil
 ---@return dbtree.Connection[] connections
 ---@return string|nil err
 function M.list(configured)
   if configured ~= nil then
     if type(configured) == "function" then
-      local called, result = pcall(configured)
-      if not called then
-        return {}, "connections function failed: " .. tostring(result)
+      local succeeded, returned = pcall(configured)
+      if not succeeded then
+        return {}, "connections function failed: " .. tostring(returned)
       end
-      configured = result
+      configured = returned
     end
 
     if type(configured) ~= "table" then
@@ -111,25 +94,25 @@ function M.list(configured)
     end
 
     local connections = {}
-    collect(connections, configured)
+    append_valid(connections, configured)
     if #connections == 0 then
       return {}, "connections held no entry with both a name and a url"
     end
     return connections, nil
   end
 
-  local connections, err = from_file()
+  local connections, err = from_connections_file()
   if err then
     return {}, err
   end
 
-  local taken = {}
+  local used_names = {}
   for _, connection in ipairs(connections) do
-    taken[connection.name] = true
+    used_names[connection.name] = true
   end
-  for _, connection in ipairs(from_global()) do
-    if not taken[connection.name] then
-      taken[connection.name] = true
+  for _, connection in ipairs(from_g_dbs()) do
+    if not used_names[connection.name] then
+      used_names[connection.name] = true
       table.insert(connections, connection)
     end
   end

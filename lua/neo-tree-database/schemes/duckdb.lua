@@ -1,15 +1,5 @@
---[[
-duckdb.
-
-The `duckdb_*()` table functions are used rather than `information_schema`,
-because they carry the index sql, the constraint names and the referenced table
-that the standard views leave out. They also avoid the `.tables` dot command,
-whose output format changed in duckdb 1.5.1.
-
-A duckdb process sees only the catalogs it attached itself, so the catalog list
-holds the file this connection names and nothing else. What another process
-attached is invisible, which is the truth about what this connection reaches.
-]]
+--- Builds the duckdb queries for a connection's catalogs and their contents, and
+--- the ddl of a duckdb relation.
 
 local quote = require("neo-tree-database.quote")
 local url = require("neo-tree-database.url")
@@ -18,34 +8,30 @@ local M = {}
 
 M.quoting = quote.ANSI
 
---- Every invocation prints one row of one column with no header and no padding,
---- so stdout is the json document and nothing else.
 ---@param connection string
 ---@param sql string
 ---@return dbtree.Request
-local function invoke(connection, sql)
+local function request_for(connection, sql)
   local argv = { "duckdb" }
-  local file = url.file(connection)
-  if file ~= "" then
-    -- Read-only leaves the file unlocked for the user's own duckdb session.
-    -- duckdb rejects the flag outright for the in-memory database, which is
-    -- what an empty file name means.
-    vim.list_extend(argv, { file, "-readonly" })
+  local path = url.file(connection)
+  if path ~= "" then
+    -- -readonly leaves the file unlocked for the user's own duckdb session, and
+    -- duckdb rejects it for the in-memory database.
+    vim.list_extend(argv, { path, "-readonly" })
   end
   vim.list_extend(argv, { "-noheader", "-list", "-c", sql })
   return { argv = argv }
 end
 
---- Every catalog is reached through the one file, so the connection url answers
---- for all of them.
+--- Returns `connection` unchanged, because one duckdb process reaches every
+--- catalog that the connection's file attaches.
 ---@param connection string
 ---@return string
 function M.catalog_url(connection)
   return connection
 end
 
--- duckdb reports no blocks for an in-memory database, which has no size on
--- disk.
+-- duckdb reports no blocks for an in-memory database.
 local CATALOGS = [[
 select json_object('catalogs', coalesce(
   (select to_json(list(json_object(
@@ -61,18 +47,12 @@ select json_object('catalogs', coalesce(
 ---@param connection string
 ---@return dbtree.Request
 function M.catalogs(connection)
-  return invoke(connection, CATALOGS)
+  return request_for(connection, CATALOGS)
 end
 
--- NOT NULL is a constraint of its own in duckdb, and the Columns node already
--- says which columns are nullable, so it is dropped here rather than listed
--- once per column under Constraints.
---
--- A macro with overloads is one row per overload, and each is listed. A macro
--- carries no definition, because duckdb_functions() drops parameter defaults
--- and a CREATE MACRO rebuilt from it would differ from the one that was run.
--- A parameter declared without a type has a null type, and a macro declares no
--- return type at all.
+-- duckdb lists each NOT NULL as a constraint, which the column rows already
+-- show. A macro gets no definition, because duckdb_functions() leaves out
+-- parameter defaults.
 local INTROSPECT = [[
 select json_object('schemas', coalesce((
   select to_json(list(json_object(
@@ -163,13 +143,14 @@ select json_object('schemas', coalesce((
 ---@param catalog string
 ---@return dbtree.Request
 function M.introspect(catalog_url, catalog)
-  return invoke(catalog_url, quote.render(INTROSPECT, {
+  return request_for(catalog_url, quote.render(INTROSPECT, {
     catalog = quote.literal(catalog),
   }))
 end
 
---- The name db-query's catalog knows a relation by. One catalog holds every
---- attached database, so the name starts at the database.
+--- Returns the name path that db-query's catalog knows a relation by. It starts
+--- at the database, because db-query keeps one catalog for every attached
+--- database.
 ---@param catalog string
 ---@param schema string
 ---@param relation string
@@ -178,23 +159,22 @@ function M.catalog_name(catalog, schema, relation)
   return { catalog, schema, relation }
 end
 
---- How `column` reads inside a CREATE TABLE or after an ADD COLUMN.
+--- Returns `column` as it reads in a CREATE TABLE or after ADD COLUMN.
 ---@param column dbtree.Column
 ---@return string
 function M.column_definition(column)
-  local text = quote.identifier(column.name, M.quoting) .. " " .. (column.type or "")
+  local definition = quote.identifier(column.name, M.quoting) .. " " .. (column.type or "")
   if column.default then
-    text = text .. " DEFAULT " .. column.default
+    definition = definition .. " DEFAULT " .. column.default
   end
   if not column.nullable then
-    text = text .. " NOT NULL"
+    definition = definition .. " NOT NULL"
   end
-  return text
+  return definition
 end
 
---- duckdb keeps the statement each object was created with, so nothing is
---- rebuilt here. An index is created separately from its table and is appended
---- so the whole table arrives in one piece.
+--- Returns the statements that created `relation` and its indexes, as duckdb
+--- keeps them.
 ---@param relation dbtree.Relation
 ---@param schema string
 ---@return string[]
