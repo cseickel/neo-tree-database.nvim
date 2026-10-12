@@ -306,33 +306,27 @@ unlocked for your own duckdb session.
 **postgres** is complete. It reads `pg_catalog`, uses `pg_get_viewdef`, `pg_get_indexdef` and
 `pg_get_constraintdef` for definitions, and rebuilds `CREATE TABLE` from the catalog.
 
-**sqlite and mysql** are not implemented yet. Adding one is a module under `lua/neo-tree-database/schemes/`
-and a line in that directory's `init.lua`.
+**sqlite and mysql** are not implemented yet. Adding one is a folder under
+`lua/neo-tree-database/databases/` and a line in that directory's `init.lua`.
 
 I have no immediate plans to support other databases.
 
 ## Layout
 
-| File              | Holds                                                     |
-|-------------------|-----------------------------------------------------------|
-| `init.lua`        | the source: what expands and what fetches                 |
-| `config.lua`      | the default config: renderers and keys                    |
-| `commands.lua`    | what the keys do                                          |
-| `components.lua`  | the icon, detail text, rows and size on each line         |
-| `privileges.lua`  | the privilege columns on a grant row                      |
-| `highlights.lua`  | the highlight groups this source defines                  |
-| `focus.lua`       | keeping `b:db` on the node under the cursor               |
-| `items.lua`       | node ids, and the connections                             |
-| `objects.lua`     | turning a fetched catalog into nodes                      |
-| `routines.lua`    | each function's name, overloads, arguments and return     |
-| `roles.lua`       | the Roles folder and each role                            |
-| `grants.lua`      | the Grants folders, under an object and under a role      |
-| `connections.lua` | reading the connection list                               |
-| `client.lua`      | running a client, decoding json                           |
-| `cache.lua`       | what has already been asked                               |
-| `ddl/`            | the create, drop and change statements                    |
-| `popup.lua`       | the window a statement or a description is shown in       |
-| `scratch.lua`     | the default `open_scratch`                                |
-| `quote.lua`       | putting a name into sql safely                            |
-| `url.lua`         | reading a url, and naming a sibling database              |
-| `schemes/`        | one module per database                                   |
+The code is under `lua/neo-tree-database/`, in one folder per job.
+
+| Path                  | Holds                                                                   |
+|-----------------------|-------------------------------------------------------------------------|
+| `init.lua`            | the neo-tree source, which builds the tree from the connections         |
+| `config.lua`          | the default config: renderers and keys                                  |
+| `databases/`          | reading the connection list, running a client, and decoding its json    |
+| `databases/init.lua`  | which database handles a url, and the json every database returns      |
+| `databases/<name>/`   | one database: `init.lua` the client command, `sql.lua` the catalog queries, `ddl.lua` the CREATE statements |
+| `nodes/`              | one file per kind of node, building its children from the fetched json  |
+| `nodes/init.lua`      | which file builds each node's children, querying the database first     |
+| `state/`              | the fetched catalogs, the queries still running, the open nodes, `b:db` |
+| `components/`         | the icon, name, detail, size, rows and privilege columns on each line   |
+| `actions/`            | what the keys do                                                        |
+| `popups/`             | the window a statement or a description is shown in                     |
+| `popups/statements/`  | the create, drop and change statements                                  |
+| `shared/`             | quoting, urls and highlight groups, which several folders use           |

@@ -32,6 +32,17 @@ function M.qualified(schema, relation, quoting)
   return M.identifier(schema, quoting) .. "." .. M.identifier(relation, quoting)
 end
 
+--- Returns `name(arguments)`, or `name` alone when `arguments` is nil.
+---@param name string
+---@param arguments string|nil
+---@return string
+function M.signature(name, arguments)
+  if arguments then
+    return name .. "(" .. arguments .. ")"
+  end
+  return name
+end
+
 --- Returns `template` with each `@name` replaced by `values[name]`.
 ---@param template string
 ---@param values table<string, string>

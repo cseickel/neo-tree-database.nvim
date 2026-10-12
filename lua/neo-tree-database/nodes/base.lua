@@ -1,4 +1,5 @@
---- Builds tree items: the shapes every node shares, and the nodes above a catalog.
+--- Builds the parts every node shares: its id, its shape, and the root above the
+--- connections.
 
 local M = {}
 
@@ -76,17 +77,6 @@ function M.inherit(parent, fields)
   }, fields)
 end
 
---- Returns `name(arguments)`, or `name` alone when `arguments` is nil.
----@param name string
----@param arguments string|nil
----@return string
-function M.signature(name, arguments)
-  if arguments then
-    return name .. "(" .. arguments .. ")"
-  end
-  return name
-end
-
 --- Returns `routines` grouped by kind and name, with the groups and the routines
 --- in each group in the order given.
 ---@param routines dbtree.Routine[]
@@ -135,7 +125,7 @@ end
 
 ---@param connection dbtree.Connection
 ---@return string
-local function connection_id(connection)
+function M.connection_id(connection)
   return M.ROOT .. "/" .. M.segment(connection.name)
 end
 
@@ -145,7 +135,7 @@ end
 ---@param catalog string
 ---@return string
 function M.catalog_id(connection, catalog)
-  return connection_id(connection) .. "/" .. M.segment(catalog)
+  return M.connection_id(connection) .. "/" .. M.segment(catalog)
 end
 
 ---@param connection dbtree.Connection
@@ -154,25 +144,6 @@ end
 ---@return dbtree.Document
 function M.catalog_document(connection, catalog, url)
   return { id = M.catalog_id(connection, catalog), url = url, catalog = catalog }
-end
-
----@param connections dbtree.Connection[]
----@return dbtree.Item[]
-function M.connections(connections)
-  local connection_items = {}
-  for _, connection in ipairs(connections) do
-    local id = connection_id(connection)
-    table.insert(
-      connection_items,
-      M.container(id, connection.name, "connection", {
-        kind = "connection",
-        connection = connection,
-        url = connection.url,
-        documents = { { id = id, url = connection.url } },
-      })
-    )
-  end
-  return connection_items
 end
 
 return M

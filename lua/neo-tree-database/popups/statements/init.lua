@@ -1,6 +1,6 @@
 --- Builds the sql that creates, drops, or changes the object a node stands for.
 
-local schemes = require("neo-tree-database.schemes")
+local databases = require("neo-tree-database.databases")
 
 local M = {}
 
@@ -17,9 +17,9 @@ local M = {}
 
 ---@type dbtree.Statements
 local BUILDERS = { info = {}, drop = {}, change = {} }
-for _, name in ipairs({ "relations", "routines", "access" }) do
-  local ddl_module = require("neo-tree-database.ddl." .. name)
-  for action, builders_by_type in pairs(ddl_module) do
+for _, name in ipairs({ "relations", "functions", "roles", "grants" }) do
+  local statements_module = require("neo-tree-database.popups.statements." .. name)
+  for action, builders_by_type in pairs(statements_module) do
     for node_type, build in pairs(builders_by_type) do
       BUILDERS[action][node_type] = build
     end
@@ -36,7 +36,7 @@ local function build_statement(action, node)
     return nil, "nothing to write for " .. node.type
   end
 
-  local scheme = schemes.of(node.extra.url)
+  local scheme = databases.of(node.extra.url)
   if not scheme then
     return nil, "no statement can be written for " .. node.extra.url
   end

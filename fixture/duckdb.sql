@@ -1,5 +1,5 @@
 -- Builds a small database in memory and runs the two queries that
--- schemes/duckdb.lua sends against it.
+-- databases/duckdb/sql.lua builds against it.
 
 create table accounts(account_id integer primary key, name varchar not null);
 create table trades(trade_id integer primary key, account_id integer not null references accounts(account_id), symbol varchar not null, qty double, unique(account_id, symbol));

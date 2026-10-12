@@ -1,7 +1,7 @@
---- Builds the statements for a sequence and a function.
+--- Builds the statements for a function and for every overload of one name.
 
-local items = require("neo-tree-database.items")
-local quote = require("neo-tree-database.quote")
+local quote = require("neo-tree-database.shared.quote")
+local shared = require("neo-tree-database.popups.statements.shared")
 
 ---@type dbtree.Statements
 local M = { info = {}, drop = {}, change = {} }
@@ -22,34 +22,14 @@ local MACRO_KINDS = { macro = true, table_macro = true }
 ---@param quoting dbtree.Quoting
 ---@return string
 local function qualified_signature(schema, routine, quoting)
-  return items.signature(quote.qualified(schema, routine.name, quoting), routine.arguments)
+  return quote.signature(quote.qualified(schema, routine.name, quoting), routine.arguments)
 end
 
 ---@param schema string
 ---@param routine dbtree.Routine
 ---@return string
 local function routine_title(schema, routine)
-  return schema .. "." .. items.signature(routine.name, routine.arguments)
-end
-
----@param record dbtree.Sequence|dbtree.Routine
----@return string[]
-local function definition_lines(record)
-  if not record.definition then
-    return { "-- " .. record.name .. " has no definition" }
-  end
-  return vim.split(record.definition, "\n", { plain = true })
-end
-
-M.info.sequence = function(node)
-  return { title = node.extra.schema .. "." .. node.name, lines = definition_lines(node.extra.record) }
-end
-
-M.drop.sequence = function(node, scheme)
-  return {
-    title = "Drop " .. node.extra.schema .. "." .. node.name,
-    lines = { "DROP SEQUENCE " .. quote.qualified(node.extra.schema, node.extra.record.name, scheme.quoting) .. ";" },
-  }
+  return schema .. "." .. quote.signature(routine.name, routine.arguments)
 end
 
 ---@param schema string
@@ -84,7 +64,7 @@ end
 
 M.info.routine = function(node)
   local routine = node.extra.record
-  return { title = routine_title(node.extra.schema, routine), lines = definition_lines(routine) }
+  return { title = routine_title(node.extra.schema, routine), lines = shared.definition_lines(routine) }
 end
 
 M.drop.routine = function(node, scheme)
@@ -117,11 +97,11 @@ M.info.overloaded_routine = function(node)
       if #lines > 0 then
         table.insert(lines, "")
       end
-      vim.list_extend(lines, definition_lines(routine))
+      vim.list_extend(lines, shared.definition_lines(routine))
     end
   end
   if #lines == 0 then
-    lines = definition_lines(overloads[1])
+    lines = shared.definition_lines(overloads[1])
   end
   return { title = node.extra.schema .. "." .. node.name, lines = lines }
 end

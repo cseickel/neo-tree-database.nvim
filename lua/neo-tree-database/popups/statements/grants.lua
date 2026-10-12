@@ -1,8 +1,7 @@
---- Builds the statements that create, drop, and change a role or a grant.
+--- Builds the GRANT and REVOKE statements for a grant row.
 
-local grants = require("neo-tree-database.grants")
-local items = require("neo-tree-database.items")
-local quote = require("neo-tree-database.quote")
+local grant_rows = require("neo-tree-database.nodes.grant")
+local quote = require("neo-tree-database.shared.quote")
 
 ---@type dbtree.Statements
 local M = { info = {}, drop = {}, change = {} }
@@ -34,7 +33,7 @@ local function grant_object(target, quoting)
     return keyword .. " " .. name
   end
   local signatures = vim.tbl_map(function(arguments)
-    return items.signature(name, arguments)
+    return quote.signature(name, arguments)
   end, target.arguments)
   return keyword .. " " .. table.concat(signatures, ", ")
 end
@@ -64,7 +63,7 @@ end
 ---@param row dbtree.GrantRow
 ---@return string
 local function grant_title(row)
-  return (row.grant.grantee or "PUBLIC") .. " on " .. grants.object_name(row.target)
+  return (row.grant.grantee or "PUBLIC") .. " on " .. grant_rows.object_name(row.target)
 end
 
 M.info.grant = function(node, scheme)
@@ -117,27 +116,6 @@ M.drop.grant = function(node, scheme)
       ),
     },
   }
-end
-
-M.info.role = function(node, scheme)
-  local role = node.extra.record
-  local name = quote.identifier(role.name, scheme.quoting)
-  local attribute_clause = #role.attributes > 0 and (" WITH " .. table.concat(role.attributes, " ")) or ""
-  return { title = "Role " .. role.name, lines = { "CREATE ROLE " .. name .. attribute_clause .. ";" } }
-end
-
-M.drop.role = function(node, scheme)
-  local role = node.extra.record
-  return {
-    title = "Drop role " .. role.name,
-    lines = { "DROP ROLE " .. quote.identifier(role.name, scheme.quoting) .. ";" },
-  }
-end
-
-M.change.role = function(node, scheme)
-  local role = node.extra.record
-  local name = quote.identifier(role.name, scheme.quoting)
-  return { title = "Alter role " .. role.name, lines = { "ALTER ROLE " .. name .. " RENAME TO " .. name .. ";" } }
 end
 
 return M

@@ -1,38 +1,10 @@
---- Builds the duckdb queries for a connection's catalogs and their contents, and
---- the ddl of a duckdb relation.
-
-local quote = require("neo-tree-database.quote")
-local url = require("neo-tree-database.url")
+--- Builds the sql that lists a duckdb connection's catalogs, and the sql that
+--- reads everything one catalog holds.
 
 local M = {}
 
-M.quoting = quote.ANSI
-
----@param connection string
----@param sql string
----@return dbtree.Request
-local function request_for(connection, sql)
-  local argv = { "duckdb" }
-  local path = url.file(connection)
-  if path ~= "" then
-    -- -readonly leaves the file unlocked for the user's own duckdb session, and
-    -- duckdb rejects it for the in-memory database.
-    vim.list_extend(argv, { path, "-readonly" })
-  end
-  vim.list_extend(argv, { "-noheader", "-list", "-c", sql })
-  return { argv = argv }
-end
-
---- Returns `connection` unchanged, because one duckdb process reaches every
---- catalog that the connection's file attaches.
----@param connection string
----@return string
-function M.catalog_url(connection)
-  return connection
-end
-
 -- duckdb reports no blocks for an in-memory database.
-local CATALOGS = [[
+M.CATALOGS = [[
 select json_object('catalogs', coalesce(
   (select to_json(list(json_object(
      'name', d.database_name,
@@ -44,16 +16,10 @@ select json_object('catalogs', coalesce(
   '[]'::json))
 ]]
 
----@param connection string
----@return dbtree.Request
-function M.catalogs(connection)
-  return request_for(connection, CATALOGS)
-end
-
 -- duckdb lists each NOT NULL as a constraint, which the column rows already
 -- show. A macro gets no definition, because duckdb_functions() leaves out
 -- parameter defaults.
-local INTROSPECT = [[
+M.INTROSPECT = [[
 select json_object('schemas', coalesce((
   select to_json(list(json_object(
     'name', s.schema_name,
@@ -138,58 +104,5 @@ select json_object('schemas', coalesce((
   where s.database_name = @catalog
 ), '[]'::json))
 ]]
-
----@param catalog_url string
----@param catalog string
----@return dbtree.Request
-function M.introspect(catalog_url, catalog)
-  return request_for(catalog_url, quote.render(INTROSPECT, {
-    catalog = quote.literal(catalog),
-  }))
-end
-
---- Returns the name path that db-query's catalog knows a relation by. It starts
---- at the database, because db-query keeps one catalog for every attached
---- database.
----@param catalog string
----@param schema string
----@param relation string
----@return string[]
-function M.catalog_name(catalog, schema, relation)
-  return { catalog, schema, relation }
-end
-
---- Returns `column` as it reads in a CREATE TABLE or after ADD COLUMN.
----@param column dbtree.Column
----@return string
-function M.column_definition(column)
-  local definition = quote.identifier(column.name, M.quoting) .. " " .. (column.type or "")
-  if column.default then
-    definition = definition .. " DEFAULT " .. column.default
-  end
-  if not column.nullable then
-    definition = definition .. " NOT NULL"
-  end
-  return definition
-end
-
---- Returns the statements that created `relation` and its indexes, as duckdb
---- keeps them.
----@param relation dbtree.Relation
----@param schema string
----@return string[]
-function M.ddl(relation, schema)
-  local lines = {}
-  if relation.definition then
-    vim.list_extend(lines, vim.split(relation.definition, "\n", { plain = true }))
-  end
-  for _, index in ipairs(relation.indexes or {}) do
-    if index.definition then
-      table.insert(lines, "")
-      vim.list_extend(lines, vim.split(index.definition, "\n", { plain = true }))
-    end
-  end
-  return lines
-end
 
 return M

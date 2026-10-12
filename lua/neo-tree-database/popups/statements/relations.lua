@@ -1,7 +1,8 @@
---- Builds the statements for a schema, a relation, and a relation's columns,
---- indexes and constraints.
+--- Builds the statements for a schema, a relation, a relation's columns, indexes
+--- and constraints, and a sequence.
 
-local quote = require("neo-tree-database.quote")
+local quote = require("neo-tree-database.shared.quote")
+local shared = require("neo-tree-database.popups.statements.shared")
 
 ---@type dbtree.Statements
 local M = { info = {}, drop = {}, change = {} }
@@ -42,11 +43,7 @@ end
 
 M.info.index = function(node)
   local index = node.extra.record
-  local definition = index.definition
-  if not definition then
-    return { title = index.name, lines = { "-- " .. index.name .. " has no definition" } }
-  end
-  return { title = index.name, lines = vim.split(definition, "\n", { plain = true }) }
+  return { title = index.name, lines = shared.definition_lines(index) }
 end
 
 M.info.constraint = function(node, scheme)
@@ -78,6 +75,10 @@ end
 M.info.table = relation_info
 M.info.view = relation_info
 M.info.materialized_view = relation_info
+
+M.info.sequence = function(node)
+  return { title = node.extra.schema .. "." .. node.name, lines = shared.definition_lines(node.extra.record) }
+end
 
 M.drop.schema = function(node, scheme)
   return {
@@ -139,6 +140,13 @@ end
 M.drop.table = relation_drop
 M.drop.view = relation_drop
 M.drop.materialized_view = relation_drop
+
+M.drop.sequence = function(node, scheme)
+  return {
+    title = "Drop " .. node.extra.schema .. "." .. node.name,
+    lines = { "DROP SEQUENCE " .. quote.qualified(node.extra.schema, node.extra.record.name, scheme.quoting) .. ";" },
+  }
+end
 
 M.change.schema = function(node, scheme)
   return {

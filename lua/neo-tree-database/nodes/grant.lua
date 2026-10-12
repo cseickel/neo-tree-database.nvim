@@ -1,17 +1,9 @@
---- Builds the tree items that show grants, both under each object and under each
+--- Builds the grant rows, both in each object's Grants folder and under each
 --- role.
 
-local items = require("neo-tree-database.items")
+local base = require("neo-tree-database.nodes.base")
 
 local M = {}
-
----@class dbtree.Privilege
----@field name string As postgres spells it, such as `SELECT` or `TEMPORARY`.
----@field grantable boolean Whether the grantee may grant it to other roles.
-
----@class dbtree.Grant
----@field grantee string|nil Nil for PUBLIC.
----@field privileges dbtree.Privilege[]
 
 ---@class dbtree.GrantTarget
 ---@field kind string `database`, `schema`, a relation kind, `sequence`, or a function kind.
@@ -151,7 +143,7 @@ function M.folder(node, rows)
   end
   local id = node.id .. "/@grants"
   return {
-    items.container(id, "Grants", "folder", items.inherit(node.extra, {
+    base.container(id, "Grants", "folder", base.inherit(node.extra, {
       kind = "folder",
       folder = "grants",
       record = rows,
@@ -165,7 +157,7 @@ end
 local function id_path(...)
   local parts = {}
   for _, part in ipairs({ ... }) do
-    table.insert(parts, items.segment(part))
+    table.insert(parts, base.segment(part))
   end
   return table.concat(parts, "/")
 end
@@ -179,13 +171,13 @@ function M.grantee_items(node)
   for _, row in ipairs(node.extra.record) do
     local grantee = row.grant.grantee
     local column = row.target.column
-    local id = node.id .. "/" .. (grantee and items.segment(grantee) or "@public")
+    local id = node.id .. "/" .. (grantee and base.segment(grantee) or "@public")
     local name = grantee or "PUBLIC"
     if column then
-      id = id .. "/" .. items.segment(column)
+      id = id .. "/" .. base.segment(column)
       name = name .. " (" .. column .. ")"
     end
-    table.insert(result, items.leaf(id, name, "grant", items.inherit(node.extra, { kind = "grant", record = row })))
+    table.insert(result, base.leaf(id, name, "grant", base.inherit(node.extra, { kind = "grant", record = row })))
   end
   return result
 end
@@ -219,7 +211,7 @@ local function catalog_rows(catalog, document)
     for _, sequence in ipairs(schema.sequences or {}) do
       vim.list_extend(rows, M.rows(M.sequence_target(schema.name, sequence), sequence.grants))
     end
-    for _, overloads in ipairs(items.group_overloads(schema.functions or {})) do
+    for _, overloads in ipairs(base.group_overloads(schema.functions or {})) do
       vim.list_extend(rows, routine_rows(schema.name, overloads))
     end
   end
@@ -257,7 +249,7 @@ function M.held_items(node, document)
       .. id_path(target.kind, target.schema or "", target.name, tostring(target.overload or ""), target.column)
     table.insert(
       result,
-      items.leaf(id, M.object_name(target), "grant", items.inherit(extra, { kind = "grant", record = row }))
+      base.leaf(id, M.object_name(target), "grant", base.inherit(extra, { kind = "grant", record = row }))
     )
   end
   return result

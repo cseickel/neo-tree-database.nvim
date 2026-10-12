@@ -1,23 +1,10 @@
---- Builds the tree items for the roles on a server and the grants each role holds.
+--- Builds the Roles folder under a connection, each role, and what a role opens
+--- onto.
 
-local grants = require("neo-tree-database.grants")
-local items = require("neo-tree-database.items")
+local base = require("neo-tree-database.nodes.base")
+local grant = require("neo-tree-database.nodes.grant")
 
 local M = {}
-
----@class dbtree.Role
----@field name string
----@field attributes string[] Each as CREATE ROLE spells it, such as `LOGIN`.
----@field member_of string[]
----@field members string[]
-
----@class dbtree.ListedCatalog
----@field name string
----@field size integer|nil Bytes on disk, nil when the database cannot report it.
-
----@class dbtree.Server
----@field catalogs dbtree.ListedCatalog[]
----@field roles dbtree.Role[]|nil Nil when the database has no roles.
 
 ---@class dbtree.Roles The role lookup that every node under Roles carries.
 ---@field by_name table<string, dbtree.Role>
@@ -42,7 +29,7 @@ function M.folder(node, server, catalog_url)
   end
 
   return {
-    items.container(node.id .. "/@roles", "Roles", "folder", {
+    base.container(node.id .. "/@roles", "Roles", "folder", {
       kind = "folder",
       folder = "roles",
       connection = node.extra.connection,
@@ -57,7 +44,7 @@ end
 ---@param role dbtree.Role
 ---@return dbtree.Item
 local function role_item(node, role)
-  return items.container(node.id .. "/" .. items.segment(role.name), role.name, "role", {
+  return base.container(node.id .. "/" .. base.segment(role.name), role.name, "role", {
     kind = "role",
     connection = node.extra.connection,
     url = node.extra.url,
@@ -80,7 +67,7 @@ function M.folder_roles(node)
   end
   table.insert(
     result,
-    items.container(node.id .. "/@public", "PUBLIC", "public", {
+    base.container(node.id .. "/@public", "PUBLIC", "public", {
       kind = "public",
       connection = node.extra.connection,
       url = node.extra.url,
@@ -106,7 +93,7 @@ end
 ---@param fields table
 ---@return dbtree.Item
 local function folder_item(node, folder, label, fields)
-  return items.container(node.id .. "/@" .. folder, label, "folder", vim.tbl_extend("force", {
+  return base.container(node.id .. "/@" .. folder, label, "folder", vim.tbl_extend("force", {
     kind = "folder",
     folder = folder,
     connection = node.extra.connection,
@@ -135,7 +122,7 @@ function M.role_children(node)
     for _, catalog in ipairs(roles.catalogs) do
       table.insert(
         documents,
-        items.catalog_document(node.extra.connection, catalog.name, roles.catalog_url(node.extra.url, catalog.name))
+        base.catalog_document(node.extra.connection, catalog.name, roles.catalog_url(node.extra.url, catalog.name))
       )
     end
     table.insert(result, folder_item(node, "role_grants", "Grants", { documents = documents }))
@@ -154,10 +141,10 @@ function M.grant_catalogs(node, cached_document)
   local result = {}
   for _, document in ipairs(extra.documents) do
     local catalog = cached_document(document.id)
-    if not catalog or #grants.held_rows(document.catalog, catalog, extra.grantee) > 0 then
+    if not catalog or #grant.held_rows(document.catalog, catalog, extra.grantee) > 0 then
       table.insert(
         result,
-        items.container(node.id .. "/" .. items.segment(document.catalog), document.catalog, "grant_catalog", {
+        base.container(node.id .. "/" .. base.segment(document.catalog), document.catalog, "grant_catalog", {
           kind = "grant_catalog",
           connection = extra.connection,
           catalog = document.catalog,
@@ -169,7 +156,7 @@ function M.grant_catalogs(node, cached_document)
     end
   end
   if #result == 0 then
-    return items.message(node.id, "no grants")
+    return base.message(node.id, "no grants")
   end
   return result
 end

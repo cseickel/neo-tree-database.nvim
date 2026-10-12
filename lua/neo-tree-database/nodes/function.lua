@@ -1,31 +1,10 @@
---- Builds the tree items for the functions a schema holds.
+--- Builds the function nodes, their overloads, and the Args, return and Grants
+--- under each function.
 
-local grants = require("neo-tree-database.grants")
-local items = require("neo-tree-database.items")
+local base = require("neo-tree-database.nodes.base")
+local grant = require("neo-tree-database.nodes.grant")
 
 local M = {}
-
----@class dbtree.Field An argument or a returned column of a function.
----@field name string|nil Nil for an argument declared without a name.
----@field type string|nil Nil for a duckdb macro parameter declared without a type.
----@field default string|nil
-
----@class dbtree.Argument : dbtree.Field
----@field mode "in"|"out"|"inout"|"variadic"|"table"
-
----@class dbtree.Return
----@field type string
----@field set boolean Whether it returns SETOF the type.
----@field columns dbtree.Field[]|nil The type's columns, when it is a table or a composite type.
-
----@class dbtree.Routine
----@field name string
----@field kind "function"|"procedure"|"aggregate"|"macro"|"table_macro"
----@field arguments string|nil postgres's list of argument types, which tells overloads apart.
----@field args dbtree.Argument[] Every argument, in the order declared.
----@field returns dbtree.Return|nil Nil when the function declares no return, as for a procedure or a macro.
----@field definition string|nil
----@field grants dbtree.Grant[]|nil
 
 ---@class dbtree.Labelled A field with the name that its row shows.
 ---@field name string
@@ -102,17 +81,17 @@ end
 ---@param overload integer|nil
 ---@return dbtree.Item
 local function routine_item(node, id, name, routine, overload)
-  local extra = items.inherit(node.extra, {
+  local extra = base.inherit(node.extra, {
     kind = "routine",
     record = routine,
     overload = overload,
-    target = grants.routine_target(node.extra.schema, routine, overload),
+    target = grant.routine_target(node.extra.schema, routine, overload),
   })
   local has_children = #M.inputs(routine) > 0 or return_of(routine) ~= nil or #(routine.grants or {}) > 0
   if has_children then
-    return items.container(id, name, "routine", extra)
+    return base.container(id, name, "routine", extra)
   end
-  return items.leaf(id, name, "routine", extra)
+  return base.leaf(id, name, "routine", extra)
 end
 
 --- Returns the functions in a folder of one kind, one item per name.
@@ -120,15 +99,15 @@ end
 ---@return dbtree.Item[]
 function M.folder_routines(node)
   local result = {}
-  for _, overloads in ipairs(items.group_overloads(node.extra.record)) do
+  for _, overloads in ipairs(base.group_overloads(node.extra.record)) do
     local name = overloads[1].name
-    local id = node.id .. "/" .. items.segment(name)
+    local id = node.id .. "/" .. base.segment(name)
     if #overloads == 1 then
       table.insert(result, routine_item(node, id, name, overloads[1]))
     else
       table.insert(
         result,
-        items.container(id, name, "overloaded_routine", items.inherit(node.extra, {
+        base.container(id, name, "overloaded_routine", base.inherit(node.extra, {
           kind = "overloaded_routine",
           record = overloads,
         }))
@@ -160,7 +139,7 @@ function M.routine_children(node)
   if #inputs > 0 then
     table.insert(
       result,
-      items.container(node.id .. "/@args", "Args", "folder", items.inherit(extra, {
+      base.container(node.id .. "/@args", "Args", "folder", base.inherit(extra, {
         kind = "folder",
         folder = "arguments",
         record = inputs,
@@ -171,12 +150,12 @@ function M.routine_children(node)
   local return_row = return_of(routine)
   if return_row then
     local id = node.id .. "/@return"
-    local return_extra = items.inherit(extra, { kind = "return", record = return_row })
-    local make_item = #return_row.fields > 0 and items.container or items.leaf
+    local return_extra = base.inherit(extra, { kind = "return", record = return_row })
+    local make_item = #return_row.fields > 0 and base.container or base.leaf
     table.insert(result, make_item(id, "return", "return", return_extra))
   end
 
-  return vim.list_extend(result, grants.folder(node, grants.rows(extra.target, routine.grants)))
+  return vim.list_extend(result, grant.folder(node, grant.rows(extra.target, routine.grants)))
 end
 
 ---@param node dbtree.Item|NuiTree.Node
@@ -187,7 +166,7 @@ local function field_items(node, fields)
   for position, labelled_field in ipairs(fields) do
     table.insert(
       result,
-      items.leaf(node.id .. "/" .. position, labelled_field.name, "field", items.inherit(node.extra, {
+      base.leaf(node.id .. "/" .. position, labelled_field.name, "field", base.inherit(node.extra, {
         kind = "field",
         record = labelled_field.field,
       }))

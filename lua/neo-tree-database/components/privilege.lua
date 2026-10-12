@@ -1,6 +1,7 @@
---- Renders the privilege columns of a grant row.
+--- Defines the privilege component, which draws one privilege column of a grant
+--- row.
 
-local highlights = require("neo-tree-database.highlights")
+local highlights = require("neo-tree-database.shared.highlights")
 
 local M = {}
 
@@ -179,7 +180,7 @@ end
 ---@param node NuiTree.Node
 ---@param state neotree.State
 ---@return neotree.Render.Node[]
-M.cell = function(config, node, state)
+M.privilege = function(config, node, state)
   local use_asterisk, levels = read_config(config)
   local level = level_for(levels, vim.api.nvim_win_get_width(state.winid))
   local cell_width = column_width(config.grants, SHORTENINGS[level], use_asterisk)
