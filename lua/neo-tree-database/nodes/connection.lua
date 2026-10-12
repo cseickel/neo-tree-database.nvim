@@ -16,7 +16,6 @@ function M.connections(connections)
         kind = "connection",
         connection = connection,
         url = connection.url,
-        documents = { { id = id, url = connection.url } },
       })
     )
   end
@@ -32,16 +31,14 @@ function M.catalogs(node, catalogs, catalog_url)
   local result = {}
   for _, catalog in ipairs(catalogs) do
     local name = catalog.name
-    local url = catalog_url(parent.url, name)
     table.insert(
       result,
       base.container(base.catalog_id(parent.connection, name), name, "catalog", {
         kind = "catalog",
         connection = parent.connection,
         catalog = name,
-        url = url,
+        url = catalog_url(parent.url, name),
         record = catalog,
-        documents = { base.catalog_document(parent.connection, name, url) },
       })
     )
   end

@@ -31,6 +31,9 @@ M.navigate = function(state, path, path_to_reveal, callback)
   state.path = base.ROOT
 
   local connection_list, err = connections.list(M.config.connections)
+  if not err then
+    err = connections.set_features(connection_list, M.config.features)
+  end
   local children
   if err then
     children = base.message(base.ROOT, err)

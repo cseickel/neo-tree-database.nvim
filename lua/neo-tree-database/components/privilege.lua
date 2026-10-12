@@ -1,6 +1,7 @@
 --- Defines the privilege component, which draws one privilege column of a grant
 --- row.
 
+local databases = require("neo-tree-database.databases")
 local highlights = require("neo-tree-database.shared.highlights")
 
 local M = {}
@@ -40,23 +41,6 @@ local FORMS = {
   USAGE = { code = "U" },
 }
 
-local RELATION_PRIVILEGES = { "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN" }
-local ROUTINE_PRIVILEGES = { "EXECUTE" }
-
----@type table<string, string[]>
-local PRIVILEGES_BY_KIND = {
-  database = { "CONNECT", "CREATE", "TEMPORARY" },
-  schema = { "USAGE", "CREATE" },
-  table = RELATION_PRIVILEGES,
-  view = RELATION_PRIVILEGES,
-  materialized_view = RELATION_PRIVILEGES,
-  column = { "SELECT", "INSERT", "UPDATE", "REFERENCES" },
-  sequence = { "SELECT", "UPDATE", "USAGE" },
-  ["function"] = ROUTINE_PRIVILEGES,
-  procedure = ROUTINE_PRIVILEGES,
-  aggregate = ROUTINE_PRIVILEGES,
-}
-
 -- Ordered from the full name down to psql's one-letter code.
 ---@type (fun(name: string): string)[]
 local SHORTENINGS = {
@@ -75,10 +59,11 @@ local SHORTENINGS = {
 }
 
 ---@param target dbtree.GrantTarget
+---@param privileges_by_kind table<string, string[]>
 ---@return string[]
-local function privileges_for(target)
+local function privileges_for(target, privileges_by_kind)
   local kind = target.column and "column" or target.kind
-  local privileges = PRIVILEGES_BY_KIND[kind]
+  local privileges = privileges_by_kind[kind]
   if not privileges then
     error("neo-tree database: no privileges are known for a " .. kind)
   end
@@ -111,22 +96,26 @@ local function shortened_width(names, shorten, use_asterisk)
   return total
 end
 
+---@class dbtree.ColumnWidthSpec
+---@field grants string[]
+---@field privileges_by_kind table<string, string[]>
+---@field shorten fun(name: string): string
+---@field use_asterisk boolean
+
 --- Returns the wider of two widths: the longest name in `grants` shortened by
 --- `shorten`, and the codes of all the privileges in `grants` that one kind of
 --- object can have.
----@param grants string[]
----@param shorten fun(name: string): string
----@param use_asterisk boolean
+---@param spec dbtree.ColumnWidthSpec
 ---@return integer
-local function column_width(grants, shorten, use_asterisk)
+local function column_width(spec)
   local widest = 0
-  for _, name in ipairs(grants) do
-    widest = math.max(widest, shortened_width({ name }, shorten, use_asterisk))
+  for _, name in ipairs(spec.grants) do
+    widest = math.max(widest, shortened_width({ name }, spec.shorten, spec.use_asterisk))
   end
-  for _, kind_privileges in pairs(PRIVILEGES_BY_KIND) do
-    local names = applicable(grants, kind_privileges)
+  for _, kind_privileges in pairs(spec.privileges_by_kind) do
+    local names = applicable(spec.grants, kind_privileges)
     if #names > 0 then
-      widest = math.max(widest, shortened_width(names, SHORTENINGS[#SHORTENINGS], use_asterisk))
+      widest = math.max(widest, shortened_width(names, SHORTENINGS[#SHORTENINGS], spec.use_asterisk))
     end
   end
   return widest
@@ -157,7 +146,7 @@ local function read_config(config)
   end
   for _, name in ipairs(config.grants) do
     if not FORMS[name] then
-      error("neo-tree database: " .. name .. " is not a postgres privilege")
+      error("neo-tree database: a privilege column cannot show " .. name)
     end
   end
   local grant_option = config.grant_option or "highlight"
@@ -183,11 +172,18 @@ end
 M.privilege = function(config, node, state)
   local use_asterisk, levels = read_config(config)
   local level = level_for(levels, vim.api.nvim_win_get_width(state.winid))
-  local cell_width = column_width(config.grants, SHORTENINGS[level], use_asterisk)
+  local scheme = assert(databases.of(node.extra.url), "a grant was read with no scheme to read it")
+  local privileges_by_kind = assert(scheme.privileges, "a grant was read from a database that has no grants")
+  local cell_width = column_width({
+    grants = config.grants,
+    privileges_by_kind = privileges_by_kind,
+    shorten = SHORTENINGS[level],
+    use_asterisk = use_asterisk,
+  })
   ---@type dbtree.GrantRow
   local row = node.extra.record
 
-  local names = applicable(config.grants, privileges_for(row.target))
+  local names = applicable(config.grants, privileges_for(row.target, privileges_by_kind))
   if #names == 0 then
     return { { text = string.rep(" ", cell_width + 1) } }
   end

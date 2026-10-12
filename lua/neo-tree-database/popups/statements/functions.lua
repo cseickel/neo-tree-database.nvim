@@ -6,17 +6,6 @@ local shared = require("neo-tree-database.popups.statements.shared")
 ---@type dbtree.Statements
 local M = { info = {}, drop = {}, change = {} }
 
--- postgres accepts ROUTINE for a function, a procedure and an aggregate alike.
-local DROP_KEYWORD = {
-  ["function"] = "ROUTINE",
-  procedure = "ROUTINE",
-  aggregate = "ROUTINE",
-  macro = "MACRO",
-  table_macro = "MACRO TABLE",
-}
-
-local MACRO_KINDS = { macro = true, table_macro = true }
-
 ---@param schema string
 ---@param routine dbtree.Routine
 ---@param quoting dbtree.Quoting
@@ -32,22 +21,16 @@ local function routine_title(schema, routine)
   return schema .. "." .. quote.signature(routine.name, routine.arguments)
 end
 
+-- postgres accepts ROUTINE for a function, a procedure and an aggregate alike.
 ---@param schema string
 ---@param overloads dbtree.Routine[]
 ---@param quoting dbtree.Quoting
 ---@return string
 local function drop_statement(schema, overloads, quoting)
-  -- duckdb reports no argument types, so the overloads of a macro share one
-  -- signature.
-  local signatures, listed = {}, {}
-  for _, routine in ipairs(overloads) do
-    local signature = qualified_signature(schema, routine, quoting)
-    if not listed[signature] then
-      listed[signature] = true
-      table.insert(signatures, signature)
-    end
-  end
-  return "DROP " .. DROP_KEYWORD[overloads[1].kind] .. " " .. table.concat(signatures, ", ") .. ";"
+  local signatures = vim.tbl_map(function(routine)
+    return qualified_signature(schema, routine, quoting)
+  end, overloads)
+  return "DROP ROUTINE " .. table.concat(signatures, ", ") .. ";"
 end
 
 ---@param schema string
@@ -69,9 +52,6 @@ end
 
 M.drop.routine = function(node, scheme)
   local routine = node.extra.record
-  if MACRO_KINDS[routine.kind] and node.extra.overload then
-    return nil, "duckdb drops every overload of a macro at once, from the macro's name"
-  end
   return {
     title = "Drop " .. routine_title(node.extra.schema, routine),
     lines = { drop_statement(node.extra.schema, { routine }, scheme.quoting) },
@@ -80,9 +60,6 @@ end
 
 M.change.routine = function(node, scheme)
   local routine = node.extra.record
-  if MACRO_KINDS[routine.kind] then
-    return nil, "duckdb cannot alter a macro"
-  end
   return {
     title = "Alter " .. routine_title(node.extra.schema, routine),
     lines = { rename_statement(node.extra.schema, routine, scheme.quoting) },
@@ -115,9 +92,6 @@ end
 
 M.change.overloaded_routine = function(node, scheme)
   local overloads = node.extra.record
-  if MACRO_KINDS[overloads[1].kind] then
-    return nil, "duckdb cannot alter a macro"
-  end
   return {
     title = "Alter " .. node.extra.schema .. "." .. node.name,
     lines = vim.tbl_map(function(routine)

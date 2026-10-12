@@ -62,7 +62,7 @@ end
 
 -- pg_total_relation_size takes a lock on each relation it measures.
 ---@type dbtree.SizeSql
-local EXACT_SIZES = {
+M.EXACT_SIZES = {
   total = function(oid)
     return ("pg_total_relation_size(%s)"):format(oid)
   end,
@@ -72,7 +72,7 @@ local EXACT_SIZES = {
 -- Reads the page counts that vacuum and analyze last recorded in pg_class, which
 -- takes no lock. A sequence's relpages stays 0, so it counts as its one page.
 ---@type dbtree.SizeSql
-local ESTIMATED_SIZES = {
+M.ESTIMATED_SIZES = {
   total = function(oid)
     return ([[(
       select sum(case when part.relkind = 'S' then 1 else part.relpages end)::bigint
@@ -91,6 +91,8 @@ local ESTIMATED_SIZES = {
   estimated = true,
 }
 
+local NO_SIZE = "'size', null"
+
 --- Returns the `size` key and value of a json object, followed by
 --- `size_estimated` when the size is an estimate.
 ---@param sizes dbtree.SizeSql
@@ -103,15 +105,34 @@ local function size_json_pairs(sizes, expression)
   return "'size', " .. expression
 end
 
---- Returns the size json pairs for a relation. A partitioned table or index has
---- no storage of its own, so its size is the sum of its partitions, and a view
---- or a foreign table has no size. The partitions are found through
---- pg_inherits, because pg_partition_tree locks each one.
----@param sizes dbtree.SizeSql
+--- Returns the size json pairs for the schema `n`, which is what its tables,
+--- materialized views and sequences take, or a null size when `sizes` is nil.
+---@param sizes dbtree.SizeSql|nil
+---@return string
+local function schema_size_json(sizes)
+  if not sizes then
+    return NO_SIZE
+  end
+  return size_json_pairs(sizes, [[(
+      select coalesce(sum(]] .. sizes.total("c.oid") .. [[), 0)::bigint
+      from pg_class c
+      where c.relnamespace = n.oid and c.relkind in ('r', 'm', 'S')
+    )]])
+end
+
+--- Returns the size json pairs for a relation, or a null size when `sizes` is
+--- nil. A partitioned table or index has no storage of its own, so its size is
+--- the sum of its partitions, and a view or a foreign table has no size. The
+--- partitions are found through pg_inherits, because pg_partition_tree locks
+--- each one.
+---@param sizes dbtree.SizeSql|nil
 ---@param oid string
 ---@param relkind string
 ---@return string
 local function relation_size_json(sizes, oid, relkind)
+  if not sizes then
+    return NO_SIZE
+  end
   return size_json_pairs(sizes, ([[case
     when %s in ('v', 'f') then null
     when %s in ('p', 'I') then (
@@ -126,16 +147,22 @@ local function relation_size_json(sizes, oid, relkind)
   end]]):format(relkind, relkind, oid, sizes.total("tree.relid"), sizes.total(oid)))
 end
 
--- pg_database_size raises an error for a database the role cannot connect to.
--- Since postgres 16 a role can hold the same membership from several grantors,
--- so the membership lists use `distinct`.
-M.CATALOGS = [[
+--- Returns the sql that lists the server's databases, each with its size when
+--- `read_sizes` is set, and its roles. pg_database_size raises an error for a
+--- database the role cannot connect to. Since postgres 16 a role can hold the
+--- same membership from several grantors, so the membership lists use
+--- `distinct`.
+---@param read_sizes boolean
+---@return string
+function M.catalogs(read_sizes)
+  local size = read_sizes and "case when has_database_privilege(oid, 'CONNECT') then pg_database_size(oid) end"
+    or "null"
+  return [[
 select json_build_object(
   'catalogs', coalesce((
     select json_agg(json_build_object(
       'name', datname,
-      'size', case when has_database_privilege(oid, 'CONNECT') then pg_database_size(oid) end
-    ) order by datname)
+      'size', ]] .. size .. "\n" .. [[    ) order by datname)
     from pg_database where datallowconn and not datistemplate
   ), '[]'::json),
   'roles', coalesce((
@@ -171,9 +198,14 @@ select json_build_object(
   ), '[]'::json)
 )
 ]]
+end
 
---- Returns the sql that reads everything the connected database holds, with
---- sizes from `sizes`. It relies on these postgres behaviors:
+---@class dbtree.PostgresIntrospect
+---@field sizes dbtree.SizeSql|nil How to measure each relation, or nil to read no sizes or row counts.
+---@field grants boolean
+
+--- Returns the sql that reads everything the connected database holds. It
+--- relies on these postgres behaviors:
 --- - reltuples is -1 until the table is analyzed.
 --- - indkey holds 0 for an expression column, so index columns come from
 ---   pg_get_indexdef.
@@ -184,25 +216,35 @@ select json_build_object(
 --- - proallargtypes is null when every argument is an input, and proargtypes
 ---   holds the same types then.
 --- - A procedure's prorettype is void.
----@param sizes dbtree.SizeSql
+---@param spec dbtree.PostgresIntrospect
 ---@return string
-local function introspect_sql(sizes)
-  return [[
-select json_build_object(
-  'grants', (
-    select ]] .. grants_or_default_json("d.datacl", "d", "d.datdba") .. [[
+function M.introspect(spec)
+  local sizes = spec.sizes
+  local rows = sizes and "case when c.reltuples < 0 then null else c.reltuples::bigint end" or "null"
+
+  ---@param acl string
+  ---@param kind string
+  ---@param owner string
+  ---@return string
+  local function acl_grants(acl, kind, owner)
+    return spec.grants and grants_or_default_json(acl, kind, owner) or "null"
+  end
+
+  local database_grants = spec.grants
+      and ("(\n    select " .. grants_or_default_json("d.datacl", "d", "d.datdba") .. [[
     from pg_database d
     where d.datname = current_database()
-  ),
+  )]])
+    or "null"
+
+  return [[
+select json_build_object(
+  'grants', ]] .. database_grants .. [[,
   'schemas', coalesce((
   select json_agg(json_build_object(
     'name', n.nspname,
-    'grants', ]] .. grants_or_default_json("n.nspacl", "n", "n.nspowner") .. [[,
-    ]] .. size_json_pairs(sizes, [[(
-      select coalesce(sum(]] .. sizes.total("c.oid") .. [[), 0)::bigint
-      from pg_class c
-      where c.relnamespace = n.oid and c.relkind in ('r', 'm', 'S')
-    )]]) .. [[,
+    'grants', ]] .. acl_grants("n.nspacl", "n", "n.nspowner") .. [[,
+    ]] .. schema_size_json(sizes) .. [[,
     'relations', coalesce((
       select json_agg(json_build_object(
         'name', c.relname,
@@ -211,7 +253,7 @@ select json_build_object(
                   when 'm' then 'materialized_view'
                   else 'table'
                 end,
-        'rows', case when c.reltuples < 0 then null else c.reltuples::bigint end,
+        'rows', ]] .. rows .. [[,
         ]] .. relation_size_json(sizes, "c.oid", "c.relkind") .. [[,
         'definition', case when c.relkind in ('v', 'm')
                         then 'CREATE '
@@ -220,7 +262,7 @@ select json_build_object(
                              || ' AS ' || pg_get_viewdef(c.oid, true)
                         else null
                       end,
-        'grants', ]] .. grants_or_default_json("c.relacl", "r", "c.relowner") .. [[,
+        'grants', ]] .. acl_grants("c.relacl", "r", "c.relowner") .. [[,
         'columns', coalesce((
           select json_agg(json_build_object(
             'name', a.attname,
@@ -230,7 +272,7 @@ select json_build_object(
             'identity', nullif(a.attidentity, ''),
             'generated', nullif(a.attgenerated, ''),
             'position', a.attnum,
-            'grants', ]] .. grants_json("a.attacl") .. [[
+            'grants', ]] .. (spec.grants and grants_json("a.attacl") or "null") .. [[
           ) order by a.attnum)
           from pg_attribute a
           left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
@@ -290,7 +332,7 @@ select json_build_object(
                       || case when s.seqcycle then ' CYCLE' else ' NO CYCLE' end
                       || ';',
         ]] .. relation_size_json(sizes, "c.oid", "c.relkind") .. [[,
-        'grants', ]] .. grants_or_default_json("c.relacl", "s", "c.relowner") .. [[
+        'grants', ]] .. acl_grants("c.relacl", "s", "c.relowner") .. [[
       ) order by c.relname)
       from pg_class c
       join pg_sequence s on s.seqrelid = c.oid
@@ -339,7 +381,7 @@ select json_build_object(
           )
         ) end,
         'definition', case when p.prokind <> 'a' then rtrim(pg_get_functiondef(p.oid), E'\n') || ';' end,
-        'grants', ]] .. grants_or_default_json("p.proacl", "f", "p.proowner") .. [[
+        'grants', ]] .. acl_grants("p.proacl", "f", "p.proowner") .. [[
       ) order by p.proname, pg_get_function_identity_arguments(p.oid))
       from pg_proc p
       where p.pronamespace = n.oid
@@ -353,8 +395,5 @@ select json_build_object(
 ), '[]'::json))
 ]]
 end
-
-M.INTROSPECT = introspect_sql(EXACT_SIZES)
-M.INTROSPECT_ESTIMATED = introspect_sql(ESTIMATED_SIZES)
 
 return M

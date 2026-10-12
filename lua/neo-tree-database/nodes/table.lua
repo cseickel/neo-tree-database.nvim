@@ -1,5 +1,5 @@
---- Builds the table and view nodes, and their Columns, Indexes, Constraints and
---- Grants folders.
+--- Builds the table and view nodes, their Columns, Indexes, Constraints and
+--- Grants folders, and each index's key parts.
 
 local base = require("neo-tree-database.nodes.base")
 local grant = require("neo-tree-database.nodes.grant")
@@ -55,17 +55,42 @@ function M.folders(node)
 end
 
 --- Returns the columns, indexes or constraints in one of a relation's folders.
+--- An index with key parts expands to them.
 ---@param node dbtree.Item|NuiTree.Node
 ---@return dbtree.Item[]
 function M.parts(node)
   local parent = node.extra
   local result = {}
   for _, record in ipairs(parent.record) do
+    local has_parts = parent.leaf == "index" and #(record.columns or {}) > 0
+    local make_item = has_parts and base.container or base.leaf
     table.insert(
       result,
-      base.leaf(node.id .. "/" .. base.segment(record.name), record.name, parent.leaf, base.inherit(parent, {
+      make_item(node.id .. "/" .. base.segment(record.name), record.name, parent.leaf, base.inherit(parent, {
         kind = parent.leaf,
         record = record,
+      }))
+    )
+  end
+  if parent.leaf == "column" then
+    base.align_names(result)
+  end
+  return result
+end
+
+--- Returns the key parts of an index, in key order, each named as the database
+--- writes it, such as `lower(email)`.
+---@param node dbtree.Item|NuiTree.Node
+---@return dbtree.Item[]
+function M.index_parts(node)
+  local parent = node.extra
+  local result = {}
+  for position, part in ipairs(parent.record.columns) do
+    table.insert(
+      result,
+      base.leaf(node.id .. "/" .. position, part, "index_column", base.inherit(parent, {
+        kind = "index_column",
+        record = parent.record,
       }))
     )
   end

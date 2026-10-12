@@ -198,35 +198,48 @@ function M.object_name(target)
   return target.column and (name .. "." .. target.column) or name
 end
 
----@param catalog string
----@param document dbtree.Catalog
+--- Returns the grant rows of every object in `objects`, which `schema` holds.
+---@param schema string
+---@param objects dbtree.Objects
 ---@return dbtree.GrantRow[]
-local function catalog_rows(catalog, document)
-  local rows = M.rows(M.database_target(catalog), document.grants)
-  for _, schema in ipairs(document.schemas or {}) do
-    vim.list_extend(rows, M.rows(M.schema_target(schema.name), schema.grants))
-    for _, relation in ipairs(schema.relations or {}) do
-      vim.list_extend(rows, M.relation_rows(schema.name, relation))
-    end
-    for _, sequence in ipairs(schema.sequences or {}) do
-      vim.list_extend(rows, M.rows(M.sequence_target(schema.name, sequence), sequence.grants))
-    end
-    for _, overloads in ipairs(base.group_overloads(schema.functions or {})) do
-      vim.list_extend(rows, routine_rows(schema.name, overloads))
-    end
+local function object_rows(schema, objects)
+  local rows = {}
+  for _, relation in ipairs(objects.relations or {}) do
+    vim.list_extend(rows, M.relation_rows(schema, relation))
+  end
+  for _, sequence in ipairs(objects.sequences or {}) do
+    vim.list_extend(rows, M.rows(M.sequence_target(schema, sequence), sequence.grants))
+  end
+  for _, overloads in ipairs(base.group_overloads(objects.functions or {})) do
+    vim.list_extend(rows, routine_rows(schema, overloads))
   end
   return rows
 end
 
---- Returns the grant rows in `document` whose grantee is `grantee`, where nil
+---@param name string
+---@param catalog dbtree.Catalog
+---@return dbtree.GrantRow[]
+local function catalog_rows(name, catalog)
+  local rows = M.rows(M.database_target(name), catalog.grants)
+  if not catalog.schemas then
+    return vim.list_extend(rows, object_rows(name, catalog))
+  end
+  for _, schema in ipairs(catalog.schemas) do
+    vim.list_extend(rows, M.rows(M.schema_target(schema.name), schema.grants))
+    vim.list_extend(rows, object_rows(schema.name, schema))
+  end
+  return rows
+end
+
+--- Returns the grant rows in `catalog` whose grantee is `grantee`, where nil
 --- means PUBLIC.
----@param catalog string
----@param document dbtree.Catalog
+---@param name string
+---@param catalog dbtree.Catalog
 ---@param grantee string|nil
 ---@return dbtree.GrantRow[]
-function M.held_rows(catalog, document, grantee)
+function M.held_rows(name, catalog, grantee)
   local held_rows = {}
-  for _, row in ipairs(catalog_rows(catalog, document)) do
+  for _, row in ipairs(catalog_rows(name, catalog)) do
     if row.grant.grantee == grantee then
       table.insert(held_rows, row)
     end
@@ -237,12 +250,12 @@ end
 --- Returns the items under a role's catalog node, one per object that the role
 --- was granted something on. `node.extra.grantee` is nil for PUBLIC.
 ---@param node dbtree.Item|NuiTree.Node
----@param document dbtree.Catalog
+---@param catalog dbtree.Catalog
 ---@return dbtree.Item[]
-function M.held_items(node, document)
+function M.held_items(node, catalog)
   local extra = node.extra
   local result = {}
-  for _, row in ipairs(M.held_rows(extra.catalog, document, extra.grantee)) do
+  for _, row in ipairs(M.held_rows(extra.catalog, catalog, extra.grantee)) do
     local target = row.target
     local id = node.id
       .. "/"

@@ -117,40 +117,33 @@ function M.role_children(node)
   if role and #role.members > 0 then
     table.insert(result, folder_item(node, "members", "Members", { record = role.members }))
   end
-  if #roles.catalogs > 0 then
-    local documents = {}
-    for _, catalog in ipairs(roles.catalogs) do
-      table.insert(
-        documents,
-        base.catalog_document(node.extra.connection, catalog.name, roles.catalog_url(node.extra.url, catalog.name))
-      )
-    end
-    table.insert(result, folder_item(node, "role_grants", "Grants", { documents = documents }))
+  if #roles.catalogs > 0 and node.extra.connection.features.read_grants then
+    table.insert(result, folder_item(node, "role_grants", "Grants", {}))
   end
   return result
 end
 
 --- Returns the databases in a role's Grants folder where the role holds
---- something. A database whose document could not be read is listed too, so
+--- something. A database whose result could not be read is listed too, so
 --- expanding it queries the database again and shows the error.
 ---@param node dbtree.Item|NuiTree.Node
----@param cached_document fun(id: string): dbtree.Catalog|nil
+---@param cached_result fun(id: string): dbtree.Catalog|nil
 ---@return dbtree.Item[]
-function M.grant_catalogs(node, cached_document)
+function M.grant_catalogs(node, cached_result)
   local extra = node.extra
   local result = {}
-  for _, document in ipairs(extra.documents) do
-    local catalog = cached_document(document.id)
-    if not catalog or #grant.held_rows(document.catalog, catalog, extra.grantee) > 0 then
+  for _, listed in ipairs(extra.roles.catalogs) do
+    local name = listed.name
+    local catalog = cached_result(base.catalog_id(extra.connection, name))
+    if not catalog or #grant.held_rows(name, catalog, extra.grantee) > 0 then
       table.insert(
         result,
-        base.container(node.id .. "/" .. base.segment(document.catalog), document.catalog, "grant_catalog", {
+        base.container(node.id .. "/" .. base.segment(name), name, "grant_catalog", {
           kind = "grant_catalog",
           connection = extra.connection,
-          catalog = document.catalog,
-          url = document.url,
+          catalog = name,
+          url = extra.roles.catalog_url(extra.url, name),
           grantee = extra.grantee,
-          documents = { document },
         })
       )
     end

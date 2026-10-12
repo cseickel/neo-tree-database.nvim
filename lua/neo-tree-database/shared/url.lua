@@ -3,27 +3,11 @@
 
 local M = {}
 
-M.MEMORY = ":memory:"
-
 --- Returns the scheme of `url` in lowercase, or an empty string when it has none.
 ---@param url string
 ---@return string
 function M.scheme(url)
   return (url:match("^(%a[%w+.%-]*):") or ""):lower()
-end
-
---- Returns the file that a `scheme:path` url names, or an empty string when the
---- url means the in-memory database.
----@param url string
----@return string
-function M.file(url)
-  local path = url:gsub("^%a[%w+.%-]*:", ""):gsub("^//", "")
-  if path == "" or path == M.MEMORY then
-    return ""
-  end
-  -- vim.fn.expand would also read `*`, `[`, `{`, `%` and `#` as wildcards, and
-  -- return an empty path when they match nothing.
-  return vim.fs.normalize(path)
 end
 
 --- Returns the parts of a `scheme://authority/database?query#fragment` url, or
@@ -47,6 +31,22 @@ local function split_server_url(url)
     database = database,
     suffix = suffix,
   }
+end
+
+--- Returns `url` without the password in its credentials or in a `password`
+--- query parameter. A password may hold `@`, so the credentials end at the
+--- authority's last `@`.
+---@param url string
+---@return string
+function M.without_password(url)
+  local scheme, authority, rest = url:match("^(%a[%w+.%-]*://)([^/?#]*)(.*)$")
+  if scheme then
+    local credentials, host = authority:match("^(.*)@([^@]*)$")
+    if credentials then
+      url = scheme .. credentials:gsub(":.*$", "") .. "@" .. host .. rest
+    end
+  end
+  return (url:gsub("([?&;])password=[^&;#]*", "%1"))
 end
 
 --- Returns `url` with its database replaced by `name`. A url that names a file

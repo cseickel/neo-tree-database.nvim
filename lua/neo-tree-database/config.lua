@@ -3,6 +3,8 @@
 
 ---@class (exact) neotree.Config.Database : neotree.Config.Source
 ---@field connections dbtree.Connection[]|fun(): dbtree.Connection[]|nil
+---@field features dbtree.FeaturesConfig|nil
+---@field auto_refresh boolean Whether a result shown from disk is read again in the background.
 ---@field open_scratch fun(spec: dbtree.Scratch)|nil
 
 ---@param indent table
@@ -24,12 +26,15 @@ local function leaf(...)
   return renderer({ "indent" }, { ... })
 end
 
-local DETAIL = { "detail" }
+local DETAIL = { "detail", align = "right", required_width = 40 }
+-- A type follows the name, lined up with its siblings' types.
+local TYPE = { "detail" }
 local SIZE = { "size", align = "right", required_width = 40 }
 local ROWS = { "rows", align = "right", required_width = 50 }
 
--- No kind of object has more than one of the privileges in a column, so each
--- cell holds one word.
+-- No kind of postgres object has more than one of the privileges in a column,
+-- so each postgres cell holds one word. A mysql database or table can hold
+-- several from the first column, which the privilege component shortens to fit.
 local PRIVILEGE_COLUMNS = {
   { "SELECT", "CREATE", "EXECUTE" },
   { "INSERT", "USAGE", "CONNECT" },
@@ -89,6 +94,8 @@ end
 
 return {
   connections = nil,
+  features = nil,
+  auto_refresh = true,
   open_scratch = nil,
   -- neo-tree renders a node type that has no renderer as `type: name`.
   renderers = {
@@ -104,12 +111,13 @@ return {
     overloaded_routine = branch(DETAIL),
     routine = branch(DETAIL),
     ["return"] = branch(DETAIL),
-    field = leaf(DETAIL),
+    field = leaf(TYPE),
     role = branch(DETAIL),
     public = branch(),
     grant_catalog = branch(),
-    column = leaf(DETAIL),
-    index = leaf(DETAIL, SIZE, ROWS),
+    column = leaf(TYPE),
+    index = branch(DETAIL, SIZE, ROWS),
+    index_column = leaf(),
     constraint = leaf(DETAIL),
     grant = grant_renderer(),
     loading = { { "indent" }, { "name" } },

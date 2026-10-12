@@ -1,29 +1,22 @@
 --- Builds the duckdb requests for a connection's catalogs and their contents.
 
+local client = require("neo-tree-database.databases.client")
 local ddl = require("neo-tree-database.databases.duckdb.ddl")
 local queries = require("neo-tree-database.databases.duckdb.sql")
 local quote = require("neo-tree-database.shared.quote")
-local url = require("neo-tree-database.shared.url")
 
 local M = {
   quoting = quote.ANSI,
   ddl = ddl.ddl,
   column_definition = ddl.column_definition,
+  statements = require("neo-tree-database.databases.duckdb.statements"),
 }
 
 ---@param connection string
 ---@param sql string
 ---@return dbtree.Request
 local function request_for(connection, sql)
-  local argv = { "duckdb" }
-  local path = url.file(connection)
-  if path ~= "" then
-    -- -readonly leaves the file unlocked for the user's own duckdb session, and
-    -- duckdb rejects it for the in-memory database.
-    vim.list_extend(argv, { path, "-readonly" })
-  end
-  vim.list_extend(argv, { "-noheader", "-list", "-c", sql })
-  return { argv = argv }
+  return { url = connection, statement = sql, decode = client.json_object }
 end
 
 --- Returns `connection` unchanged, because one duckdb process reaches every
@@ -34,18 +27,21 @@ function M.catalog_url(connection)
   return connection
 end
 
+--- Returns a request that lists the connection's catalogs.
 ---@param connection string
+---@param features dbtree.Features
 ---@return dbtree.Request
-function M.catalogs(connection)
-  return request_for(connection, queries.CATALOGS)
+function M.catalogs(connection, features)
+  return request_for(connection, queries.catalogs(features.read_sizes))
 end
 
 ---@param catalog_url string
 ---@param catalog string
+---@param features dbtree.Features
 ---@return dbtree.Request
-function M.introspect(catalog_url, catalog)
-  return request_for(catalog_url, quote.render(queries.INTROSPECT, {
-    catalog = quote.literal(catalog),
+function M.introspect(catalog_url, catalog, features)
+  return request_for(catalog_url, quote.render(queries.introspect(features.read_sizes), {
+    catalog = quote.literal(catalog, quote.ANSI),
   }))
 end
 

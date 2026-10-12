@@ -1,8 +1,18 @@
 --- Defines the icon component, which draws the glyph before each node's name.
 
+local fetching = require("neo-tree-database.state.fetching")
+
 local neo_highlights = require("neo-tree.ui.highlights")
 
 local M = {}
+
+local SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+
+---@return string
+local function spinner_frame()
+  local frame = math.floor(vim.uv.hrtime() / 1e6 / fetching.FRAME_MS)
+  return SPINNER[frame % #SPINNER + 1]
+end
 
 -- These nerd font glyphs are written as escapes because they are in the private
 -- use area, and some tools drop characters from it.
@@ -18,6 +28,7 @@ local ICONS = {
   materialized_view = "\u{ea70}",
   column = "\u{eb5f}",
   index = "\u{f160}",
+  index_column = "\u{eb5f}",
   constraint = "\u{f023}",
   sequence = "\u{f162}",
   routine = "\u{f0295}",
@@ -52,7 +63,9 @@ M.icon = function(config, node, _)
   local icons = config.icons or {}
 
   local text
-  if node.type == "folder" then
+  if fetching.has(node:get_id()) then
+    text = spinner_frame()
+  elseif node.type == "folder" then
     if node:is_expanded() then
       text = icons.folder_open or config.folder_open or ICONS.folder_open
     else

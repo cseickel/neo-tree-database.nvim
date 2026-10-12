@@ -6,6 +6,8 @@ local neo_highlights = require("neo-tree.ui.highlights")
 
 local M = {}
 
+M.DETAIL = "NeoTreeDatabaseDetail"
+M.TYPE = "NeoTreeDatabaseType"
 M.PRIVILEGE = "NeoTreeDatabasePrivilege"
 M.PRIVILEGE_NOT_HELD = "NeoTreeDatabasePrivilegeNotHeld"
 M.PRIVILEGE_GRANTABLE = "NeoTreeDatabasePrivilegeGrantable"
@@ -71,6 +73,8 @@ local function define_magnitudes(base, small, middle, large)
 end
 
 local function define_groups()
+  vim.api.nvim_set_hl(0, M.DETAIL, { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, M.TYPE, { link = "Type", default = true })
   vim.api.nvim_set_hl(0, M.SIZE, { link = "Number", default = true })
   define_magnitudes(M.SIZE, M.SIZE_KB, M.SIZE_MB, M.SIZE_GB)
   vim.api.nvim_set_hl(0, M.ROWS, { link = "String", default = true })

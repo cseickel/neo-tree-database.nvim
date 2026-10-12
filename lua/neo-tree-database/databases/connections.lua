@@ -1,10 +1,23 @@
---- Lists the connections that the tree starts from.
+--- Lists the connections that the tree starts from, and what the tree reads from
+--- each.
+
+local url = require("neo-tree-database.shared.url")
 
 local M = {}
+
+---@class dbtree.Features What the tree reads from a connection's databases.
+---@field read_grants boolean
+---@field read_sizes boolean Sizes on disk and row counts.
+
+---@alias dbtree.FeaturesConfig table|fun(connection: { name: string, url: string, scheme: string }): table|nil
 
 ---@class dbtree.Connection
 ---@field name string
 ---@field url string
+---@field features dbtree.Features Set by `set_features`.
+
+---@type dbtree.Features
+local DEFAULT_FEATURES = { read_grants = true, read_sizes = true }
 
 --- Returns the path of the connections file that vim-dadbod-ui reads.
 ---@return string
@@ -118,6 +131,35 @@ function M.list(configured)
   end
 
   return connections, nil
+end
+
+--- Sets `features` on each of `connections`, as the defaults with `configured`
+--- merged over them. `configured` is a table, or a function that takes a
+--- connection with its url's `scheme` added and returns one. Returns an error
+--- message when `configured` gives something other than a table.
+---@param connections dbtree.Connection[]
+---@param configured dbtree.FeaturesConfig|nil
+---@return string|nil err
+function M.set_features(connections, configured)
+  for _, connection in ipairs(connections) do
+    local overrides = configured
+    if type(configured) == "function" then
+      local succeeded, returned = pcall(configured, {
+        name = connection.name,
+        url = connection.url,
+        scheme = url.scheme(connection.url),
+      })
+      if not succeeded then
+        return "features function failed for " .. connection.name .. ": " .. tostring(returned)
+      end
+      overrides = returned
+    end
+    if overrides ~= nil and type(overrides) ~= "table" then
+      return "features for " .. connection.name .. " is a " .. type(overrides) .. ", not a table"
+    end
+    connection.features = vim.tbl_extend("force", DEFAULT_FEATURES, overrides or {})
+  end
+  return nil
 end
 
 return M

@@ -1,5 +1,5 @@
 --- Picks the database module that handles a connection url, and declares the
---- json documents every database module returns.
+--- results every database module returns.
 
 local url = require("neo-tree-database.shared.url")
 
@@ -11,25 +11,27 @@ local M = {}
 
 ---@class dbtree.Role
 ---@field name string
----@field attributes string[] Each as CREATE ROLE spells it, such as `LOGIN`.
+---@field attributes string[] Each as the database's CREATE statement spells it, such as `LOGIN`.
 ---@field member_of string[]
 ---@field members string[]
 
----@class dbtree.Server The document `catalogs` returns.
+---@class dbtree.Server The result `catalogs` returns.
 ---@field catalogs dbtree.ListedCatalog[]
----@field roles dbtree.Role[]|nil Nil when the database has no roles.
+---@field roles dbtree.Role[]|nil Nil when the database has no roles, or does not let the user read them.
 
----@class dbtree.Catalog The document `introspect` returns.
----@field schemas dbtree.Schema[]
----@field grants dbtree.Grant[]|nil
-
----@class dbtree.Schema
----@field name string
----@field size integer|nil Bytes on disk of everything it holds.
----@field size_estimated boolean|nil
+---@class dbtree.Objects What a schema holds, or a database that has no schemas.
 ---@field relations dbtree.Relation[]
 ---@field sequences dbtree.Sequence[]
 ---@field functions dbtree.Routine[]
+
+---@class dbtree.Catalog : dbtree.Objects The result `introspect` returns. A database with schemas lists them in `schemas` and holds no objects itself.
+---@field schemas dbtree.Schema[]|nil
+---@field grants dbtree.Grant[]|nil
+
+---@class dbtree.Schema : dbtree.Objects
+---@field name string
+---@field size integer|nil Bytes on disk of everything it holds.
+---@field size_estimated boolean|nil
 ---@field grants dbtree.Grant[]|nil
 
 ---@class dbtree.Relation
@@ -47,11 +49,13 @@ local M = {}
 ---@class dbtree.Column
 ---@field name string
 ---@field type string
+---@field collation string|nil Set by mysql when the column's collation differs from its table's.
 ---@field nullable boolean
----@field default string|nil
+---@field default string|nil As sql, or the expression of a generated column.
 ---@field position integer
 ---@field identity string|nil postgres `attidentity`, `a` or `d`.
----@field generated string|nil postgres `attgenerated`, `s` for stored.
+---@field generated string|nil postgres `attgenerated`, `s` for stored, or mysql `VIRTUAL` or `STORED`.
+---@field options string[]|nil What mysql writes after a column's default, such as `AUTO_INCREMENT`.
 ---@field grants dbtree.Grant[]|nil
 
 ---@class dbtree.Index
@@ -72,7 +76,7 @@ local M = {}
 ---@field name string
 ---@field size integer|nil Bytes on disk.
 ---@field size_estimated boolean|nil
----@field definition string
+---@field definition string|nil
 ---@field grants dbtree.Grant[]|nil
 
 ---@class dbtree.Routine
@@ -100,23 +104,28 @@ local M = {}
 ---@class dbtree.Grant
 ---@field grantee string|nil Nil for PUBLIC.
 ---@field privileges dbtree.Privilege[]
+---@field database string|nil The database name as mysql stored a grant on the whole database, which may escape `_` and `%`.
 
 ---@class dbtree.Privilege
----@field name string As postgres spells it, such as `SELECT` or `TEMPORARY`.
+---@field name string As the database spells it, such as `SELECT` or `TEMPORARY`.
 ---@field grantable boolean Whether the grantee may grant it to other roles.
 
 ---@class dbtree.Scheme
 ---@field quoting dbtree.Quoting
----@field catalogs fun(connection: string): dbtree.Request
+---@field catalogs fun(connection: string, features: dbtree.Features): dbtree.Request
 ---@field catalog_url fun(connection: string, catalog: string): string
----@field introspect fun(catalog_url: string, catalog: string): dbtree.Request
+---@field introspect fun(catalog_url: string, catalog: string, features: dbtree.Features): dbtree.Request
 ---@field ddl fun(relation: dbtree.Relation, schema: string): string[]
 ---@field column_definition fun(column: dbtree.Column): string
 ---@field catalog_name fun(catalog: string, schema: string, relation: string): string[]
+---@field privileges table<string, string[]>|nil The privileges each kind of grant target can hold, nil when the database has no grants.
+---@field statements dbtree.Statements|nil Builders that replace the shared ones whose sql this database does not accept.
 
 -- vim-dadbod accepts both `postgres` and `postgresql` urls.
 local MODULE_BY_URL_SCHEME = {
   duckdb = "duckdb",
+  mariadb = "mysql.mariadb",
+  mysql = "mysql",
   postgres = "postgres",
   postgresql = "postgres",
 }

@@ -1,38 +1,62 @@
---- Runs a database client and decodes the one json document it prints.
+--- Runs a request's statement through db-query and decodes what it prints.
 
 local M = {}
 
-local TIMEOUT_SECONDS = 30
-local TIMEOUT_MS = TIMEOUT_SECONDS * 1000
-
 ---@class dbtree.Request
----@field argv string[]
+---@field url string
+---@field statement string
+---@field decode fun(output: string): table Builds the result from what the statement printed, and throws when the output is not what it prints.
 ---@field fallback dbtree.Fallback|nil
 
 ---@class dbtree.Fallback
 ---@field error string When the failed request's error message contains this text, `request` runs in its place.
 ---@field request dbtree.Request
 
---- Runs `request` and calls `on_done` with the decoded document or an error
---- message. When the error message contains the fallback's `error` text, it runs
---- the fallback request and passes on that answer instead. `on_done` always runs
---- on a later tick of the main loop.
+---@param output string
+---@return table
+function M.json_object(output)
+  local text = vim.trim(output)
+  if text == "" then
+    error("the query printed nothing", 0)
+  end
+  -- Without luanil, a json null in an object decodes to vim.NIL, which is truthy.
+  local decoded, result = pcall(vim.json.decode, text, { luanil = { object = true } })
+  if not decoded or type(result) ~= "table" then
+    error("the query printed something other than a json object", 0)
+  end
+  return result
+end
+
+--- Returns the json objects in `output`, which holds one per line.
+---@param output string
+---@return table[]
+function M.json_rows(output)
+  local rows = {}
+  for line in output:gmatch("[^\n]+") do
+    local decoded, row = pcall(vim.json.decode, line, { luanil = { object = true } })
+    if not decoded or type(row) ~= "table" then
+      error("the query printed a line that is not a json object: " .. line, 0)
+    end
+    table.insert(rows, row)
+  end
+  return rows
+end
+
+--- Runs `request` and calls `on_done`, on a later tick of the main loop, with its
+--- result or an error message. When the error message contains the fallback's
+--- `error` text, it runs the fallback request and passes on that result instead.
 ---@param request dbtree.Request
----@param on_done fun(document: table|nil, err: string|nil)
+---@param on_done fun(result: table|nil, err: string|nil)
 function M.run(request, on_done)
-  local started, spawn_error = pcall(vim.system, request.argv, {
-    text = true,
-    timeout = TIMEOUT_MS,
-  }, vim.schedule_wrap(function(result)
-    if result.code ~= 0 then
-      local message = vim.trim(result.stderr or "")
-      if message == "" then
-        -- vim.system kills a client that times out with a signal, and the client
-        -- writes nothing to stderr.
-        message = (result.signal or 0) ~= 0
-            and ("%s did not answer within %ds"):format(request.argv[1], TIMEOUT_SECONDS)
-          or ("%s exited %d"):format(request.argv[1], result.code)
-      end
+  local loaded, db_query = pcall(require, "db-query")
+  if not loaded then
+    return vim.schedule(function()
+      on_done(nil, "the tree runs its queries through db-query.nvim, which is not installed")
+    end)
+  end
+  db_query.read({ url = request.url, statement = request.statement }, function(output, err)
+    if not output then
+      local message = err or "the query failed"
       local fallback = request.fallback
       if fallback and message:find(fallback.error, 1, true) then
         return M.run(fallback.request, on_done)
@@ -40,27 +64,12 @@ function M.run(request, on_done)
       return on_done(nil, message)
     end
 
-    local stdout = vim.trim(result.stdout or "")
-    if stdout == "" then
-      return on_done(nil, request.argv[1] .. " returned nothing")
+    local decoded, result = pcall(request.decode, output)
+    if not decoded then
+      return on_done(nil, tostring(result))
     end
-
-    -- Without luanil, a json null in an object decodes to vim.NIL, which is truthy.
-    local decoded, document = pcall(vim.json.decode, stdout, { luanil = { object = true } })
-    if not decoded or type(document) ~= "table" then
-      return on_done(nil, request.argv[1] .. " returned output that is not a json object")
-    end
-
-    on_done(document, nil)
-  end))
-
-  -- vim.system throws when the client is not installed.
-  if not started then
-    local message = tostring(spawn_error)
-    vim.schedule(function()
-      on_done(nil, message)
-    end)
-  end
+    on_done(result, nil)
+  end)
 end
 
 return M

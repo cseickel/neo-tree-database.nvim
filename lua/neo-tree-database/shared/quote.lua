@@ -4,15 +4,21 @@ local M = {}
 
 ---@class dbtree.Quoting
 ---@field identifier string The character an identifier is wrapped in.
+---@field backslash_escapes boolean Whether a backslash in a string literal escapes the character after it.
 
 ---@type dbtree.Quoting
-M.ANSI = { identifier = '"' }
+M.ANSI = { identifier = '"', backslash_escapes = false }
 
---- Returns `text` as a string literal. postgres and duckdb read a backslash in a
---- literal as a plain character.
+---@type dbtree.Quoting
+M.MYSQL = { identifier = "`", backslash_escapes = true }
+
 ---@param text string
+---@param quoting dbtree.Quoting
 ---@return string
-function M.literal(text)
+function M.literal(text, quoting)
+  if quoting.backslash_escapes then
+    text = text:gsub("\\", "\\\\")
+  end
   return "'" .. text:gsub("'", "''") .. "'"
 end
 

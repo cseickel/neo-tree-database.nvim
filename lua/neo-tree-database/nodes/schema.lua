@@ -30,27 +30,38 @@ local function of_kind(records, kind)
   end, records)
 end
 
+--- Returns a folder under `node` for each kind of object in `objects`, which
+--- `schema` holds. `node` is the schema's node, or the node of a database that
+--- has no schemas.
 ---@param node dbtree.Item|NuiTree.Node
+---@param objects dbtree.Objects
+---@param schema string
 ---@return dbtree.Item[]
-function M.folders(node)
-  local parent = node.extra
-  local schema = parent.record
-
+function M.object_folders(node, objects, schema)
   local result = {}
   for _, folder_spec in ipairs(SCHEMA_FOLDERS) do
-    local records = of_kind(schema[folder_spec.field] or {}, folder_spec.kind)
+    local records = of_kind(objects[folder_spec.field] or {}, folder_spec.kind)
     if #records > 0 then
       table.insert(
         result,
-        base.container(node.id .. "/@" .. folder_spec.folder, folder_spec.label, "folder", base.inherit(parent, {
+        base.container(node.id .. "/@" .. folder_spec.folder, folder_spec.label, "folder", base.inherit(node.extra, {
           kind = "folder",
           folder = folder_spec.folder,
+          schema = schema,
           record = records,
         }))
       )
     end
   end
-  return vim.list_extend(result, grant.folder(node, grant.rows(grant.schema_target(parent.schema), schema.grants)))
+  return result
+end
+
+---@param node dbtree.Item|NuiTree.Node
+---@return dbtree.Item[]
+function M.folders(node)
+  local parent = node.extra
+  local result = M.object_folders(node, parent.record, parent.schema)
+  return vim.list_extend(result, grant.folder(node, grant.rows(grant.schema_target(parent.schema), parent.record.grants)))
 end
 
 return M

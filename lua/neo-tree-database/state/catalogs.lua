@@ -1,29 +1,30 @@
---- Keeps each answer from a database against the id of the node that asked for it.
+--- Keeps each query result from a database under the id of the connection or
+--- database node it describes.
 
 local M = {}
 
 ---@type table<string, table>
-local answers = {}
+local results = {}
 
 ---@param id string
 ---@return table|nil
 function M.get(id)
-  return answers[id]
+  return results[id]
 end
 
 ---@param id string
----@param answer table
-function M.put(id, answer)
-  answers[id] = answer
+---@param result table
+function M.put(id, result)
+  results[id] = result
 end
 
---- Drops the answers for `id` and for every id below it.
+--- Drops the results for `id` and for every id below it.
 ---@param id string
 function M.drop(id)
   local prefix = id .. "/"
-  for key in pairs(answers) do
+  for key in pairs(results) do
     if key == id or key:sub(1, #prefix) == prefix then
-      answers[key] = nil
+      results[key] = nil
     end
   end
 end

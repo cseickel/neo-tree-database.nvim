@@ -31,26 +31,19 @@ function M.open(state)
   end
 end
 
---- Rebuilds the tree from the connection list and keeps the cached answers.
+--- Rebuilds the tree from the connection list and keeps the cached results.
 ---@param state neotree.StateWithTree
 function M.refresh(state)
   manager.navigate(state)
 end
 
 --- Queries the database again for the nearest node at or above the cursor that
---- holds `documents`.
+--- is built from query results.
 ---@param state neotree.StateWithTree
 function M.refresh_node(state)
-  local node = state.tree:get_node()
-  while node and not (node.extra and node.extra.documents) do
-    local parent_id = node:get_parent_id()
-    node = parent_id and state.tree:get_node(parent_id) or nil
+  if not nodes.refresh(state, state.tree:get_node()) then
+    vim.notify("neo-tree database: nothing here to refresh", vim.log.levels.WARN)
   end
-
-  if not node then
-    return vim.notify("neo-tree database: nothing here to refresh", vim.log.levels.WARN)
-  end
-  nodes.refresh(state, node)
 end
 
 return M

@@ -3,23 +3,33 @@
 
 local M = {}
 
--- duckdb reports no blocks for an in-memory database.
-M.CATALOGS = [[
+--- Returns the sql that lists the connection's catalogs, each with its size when
+--- `read_sizes` is set. duckdb reports no blocks for an in-memory database.
+---@param read_sizes boolean
+---@return string
+function M.catalogs(read_sizes)
+  local size = read_sizes and "case when s.total_blocks > 0 then s.block_size * s.total_blocks end" or "null"
+  return [[
 select json_object('catalogs', coalesce(
   (select to_json(list(json_object(
      'name', d.database_name,
-     'size', case when s.total_blocks > 0 then s.block_size * s.total_blocks end
-   ) order by d.database_name))
+     'size', ]] .. size .. "\n" .. [[   ) order by d.database_name))
    from duckdb_databases() d
    left join pragma_database_size() s on s.database_name = d.database_name
    where not d.internal),
   '[]'::json))
 ]]
+end
 
--- duckdb lists each NOT NULL as a constraint, which the column rows already
--- show. A macro gets no definition, because duckdb_functions() leaves out
--- parameter defaults.
-M.INTROSPECT = [[
+--- Returns the sql that reads everything the catalog `@catalog` holds, with
+--- each table's row estimate when `read_sizes` is set. duckdb lists each NOT
+--- NULL as a constraint, which the column rows already show. A macro gets no
+--- definition, because duckdb_functions() leaves out parameter defaults.
+---@param read_sizes boolean
+---@return string
+function M.introspect(read_sizes)
+  local rows = read_sizes and "estimated_size" or "null"
+  return [[
 select json_object('schemas', coalesce((
   select to_json(list(json_object(
     'name', s.schema_name,
@@ -69,7 +79,7 @@ select json_object('schemas', coalesce((
       ) order by r.name))
       from (
         select database_name, schema_name, table_name as name, 'table' as kind,
-               estimated_size as rows, sql
+               ]] .. rows .. [[ as rows, sql
         from duckdb_tables()
         union all
         select database_name, schema_name, view_name as name, 'view' as kind,
@@ -104,5 +114,6 @@ select json_object('schemas', coalesce((
   where s.database_name = @catalog
 ), '[]'::json))
 ]]
+end
 
 return M

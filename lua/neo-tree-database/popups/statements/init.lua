@@ -26,17 +26,25 @@ for _, name in ipairs({ "relations", "functions", "roles", "grants" }) do
   end
 end
 
+-- A key part of an index carries the index as its record, and shows the
+-- index's statements.
+local STATEMENT_TYPE = { index_column = "index" }
+
+--- Builds the statement with the database's own builder for `node` when it has
+--- one, and with the shared builder otherwise.
 ---@param action "info"|"drop"|"change"
 ---@param node NuiTree.Node
 ---@return dbtree.Statement|nil statement
 ---@return string|nil err
 local function build_statement(action, node)
-  local build = BUILDERS[action][node.type]
+  local node_type = STATEMENT_TYPE[node.type] or node.type
+  local scheme = databases.of(node.extra.url)
+  local own_builders = scheme and scheme.statements and scheme.statements[action] or {}
+  local build = own_builders[node_type] or BUILDERS[action][node_type]
   if not build then
     return nil, "nothing to write for " .. node.type
   end
 
-  local scheme = databases.of(node.extra.url)
   if not scheme then
     return nil, "no statement can be written for " .. node.extra.url
   end

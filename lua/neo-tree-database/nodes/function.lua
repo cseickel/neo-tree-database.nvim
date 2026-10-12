@@ -172,7 +172,7 @@ local function field_items(node, fields)
       }))
     )
   end
-  return result
+  return base.align_names(result)
 end
 
 ---@param node dbtree.Item|NuiTree.Node

@@ -12,11 +12,6 @@ local M = {}
 ---@field children dbtree.Item[]|nil
 ---@field _is_expanded boolean|nil
 
----@class dbtree.Document A query result that a node is built from, and where to query it.
----@field id string The cache key of the result.
----@field url string
----@field catalog string|nil The catalog the result describes, nil for a connection's catalog list.
-
 --- Returns `name` with `%`, `/` and `@` percent-encoded, so it can be one segment
 --- of a node id. Ids separate segments with `/` and start a heading or
 --- placeholder segment with `@`.
@@ -77,6 +72,21 @@ function M.inherit(parent, fields)
   }, fields)
 end
 
+--- Sets `name_width` on each of `items` to the width of the widest of their
+--- names, so the text drawn after each name can start in the same column.
+---@param items dbtree.Item[]
+---@return dbtree.Item[]
+function M.align_names(items)
+  local widest = 0
+  for _, item in ipairs(items) do
+    widest = math.max(widest, vim.api.nvim_strwidth(item.name))
+  end
+  for _, item in ipairs(items) do
+    item.extra.name_width = widest
+  end
+  return items
+end
+
 --- Returns `routines` grouped by kind and name, with the groups and the routines
 --- in each group in the order given.
 ---@param routines dbtree.Routine[]
@@ -129,21 +139,13 @@ function M.connection_id(connection)
   return M.ROOT .. "/" .. M.segment(connection.name)
 end
 
---- Returns the id of the node for `catalog`, which is also the cache key of the
---- catalog's document.
+--- Returns the id of the node for `catalog`, which is also the key its result is
+--- cached under.
 ---@param connection dbtree.Connection
 ---@param catalog string
 ---@return string
 function M.catalog_id(connection, catalog)
   return M.connection_id(connection) .. "/" .. M.segment(catalog)
-end
-
----@param connection dbtree.Connection
----@param catalog string
----@param url string
----@return dbtree.Document
-function M.catalog_document(connection, catalog, url)
-  return { id = M.catalog_id(connection, catalog), url = url, catalog = catalog }
 end
 
 return M
